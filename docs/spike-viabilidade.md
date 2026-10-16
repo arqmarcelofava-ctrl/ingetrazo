@@ -39,7 +39,7 @@ dela é movido. A lista completa está na seção 3.
 | 5 | Regenerar a geometria 3D a partir de parâmetros guardados, num passo de desfazer | **SIM** | Padrão do Windowizer, provado em `plugins/bim_proto.py`; o núcleo não avisa quando o objeto é movido. |
 | 6 | Acrescentar prancha ou modelo de página ao compositor e exportar PDF ou SVG | **PARCIAL** | Prancha: sim (dados públicos). Modelo: só por arquivo JSON. PDF: só por caminho privado. SVG: não existe. |
 
-As evidências executáveis estão em `tests/test_bim_proto.py` (28 testes) e
+As evidências executáveis estão em `tests/test_bim_proto.py` (42 testes) e
 `tests/test_spike_viabilidade.py` (7 testes); cada afirmação abaixo diz qual
 teste a sustenta, quando há.
 
@@ -305,6 +305,7 @@ repositório.
 | Parâmetros da parede | `group.ext["bim_proto"] = {kind, a, b, thickness, height, level, base_offset}` — por objeto, no `.igz`. |
 | Níveis | `scene.plugin_data["bim_proto"]["levels"] = [{id, name, z}]` — do projeto, no `.igz`. Sempre existe `PB`. |
 | Geometria | derivada: prisma fechado (6 faces, normais para fora), `z = z(nível) + base_offset`. Volume = comprimento × espessura × altura (teste). Etiqueta `IfcWall` via `core.bim.tag_group`. |
+| Importar planta | `wall_from_rectangle(pontos)` (retângulo em qualquer orientação → eixo + espessura) e `create_walls(viewport, registros)`: lote em **1 passo** de desfazer. |
 | Atualizar 3D | `update_3d(viewport, alvos=None)`: regenera paredes (seleção, ou todas) de seus registros e dos níveis, **todas num único passo**. |
 | Editar + atualizar | `edit_walls(viewport, alvos, **parametros)`: 1 passo, desfaz parâmetros e geometria. |
 | Navegador | `add_outliner_kind` rotula a parede ("Parede", nível, espessura, altura). |
@@ -316,7 +317,7 @@ pip install -r requirements.txt           # nenhuma dependência nova
 QT_QPA_PLATFORM=offscreen python -m pytest tests/test_bim_proto.py tests/test_spike_viabilidade.py
 ```
 
-Resultado nesta sessão: **35 passaram**. Além disso, rodei a seleção
+Resultado nesta sessão: **49 passaram**. Além disso, rodei a seleção
 `-k "plugin or extension or shortcut or bundle or spec or deferred or menu"`
 da suíte inteira (carregador, atalhos, menu Extensões, plugins empacotados):
 387 passaram, 1 ignorado. **Não rodei a suíte completa** (5 mil testes).
@@ -355,6 +356,44 @@ Os comprimentos em laranja vêm dos parâmetros guardados em `group.ext`.)
 (e uma quina que sobra) — na planta aparece como os quadradinhos contornados, na
 axonometria como as arestas duplicadas. Um BIM de verdade precisa de resolução
 de encontros (parede com parede) na regeneração; o protótipo não faz.
+
+### Teste com uma planta real (DWG de um projeto em andamento)
+
+Um DWG de planta de apartamento (AutoCAD 2018, em metros) foi passado pelo
+caminho completo. **O arquivo e as imagens dele não estão no repositório**
+(dado de cliente; o que segue são só números e achados genéricos).
+
+| Etapa | Resultado |
+|---|---|
+| DWG → DXF (`vendor/libredwg`, `formats/dwg_bridge.py`) | 1,3 s, com reparos do núcleo; avisos de classes "instáveis" do LibreDWG sem efeito aqui |
+| Importador do IngeTrazo (`formats/dxf_in.py`) | 4,4 s; 646 entidades, ~45 mil arestas, 527 grupos, 21 camadas. **Nenhuma face**: é planta 2D |
+| O que o importador **não** traz | 430 `HATCH` (a alvenaria e os pisos são hachuras sólidas) e o `MTEXT` — as paredes chegam só como contorno |
+| Alvenaria no DWG | blocos anônimos (um por trecho de parede) com polígono + hachura; pilares estruturais em blocos **aninhados** |
+| Reconstrução pelo protótipo | 134 peças (117 paredes + 17 pilares) da planta de proposta, por `wall_from_rectangle` + `create_walls` |
+| Conferência | `.igz` salvo, reaberto e redesenhado: nenhum segmento a mais de 5 mm do contorno dos retângulos do DWG; parâmetros idênticos após reabrir |
+| Desfazer | **1 passo** para as 134 peças (antes do `create_walls` eram 134) |
+
+Achados que valem para qualquer planta importada:
+
+1. **Blocos espelhados chegam em coordenadas do objeto (OCS).** Um bloco inserido
+   com escala −1 traz o polígono com extrusão `(0,0,−1)`; ler os pontos sem
+   converter para o mundo (WCS) espelha a parede em X. Foi um erro real da
+   primeira extração; `ezdxf` resolve com `LWPolyline.vertices_in_wcs()`.
+2. **Alvenaria aninhada.** Parte da estrutura estava em blocos dentro de blocos;
+   explodir só o primeiro nível perde pilares e paredes do núcleo.
+3. **Duas plantas empilhadas no mesmo espaço-modelo** (base e proposta, 25 m
+   uma da outra): é preciso escolher qual reconstruir.
+4. **O DWG não tem altura nem nível.** Todo Z é ~0; a altura (2,80 m) é
+   **suposição** e precisa vir do usuário. O modelo vira "um pavimento".
+5. **O importador do núcleo ignora hachuras** — perde justamente o que o
+   desenhista usou para marcar parede. Um BIM leve sobre DWG depende de ler
+   essas hachuras (ou os polígonos dentro dos blocos), como o protótipo faz
+   fora do importador.
+6. **Falta resolver encontros.** As peças do DWG já vêm cortadas nos encontros
+   (por isso fecham), mas o protótipo continua sem resolver T/L entre paredes
+   desenhadas por eixo (achado das imagens acima).
+7. Portas e vidros existem no DWG como blocos em camadas próprias; **vãos não
+   foram reconstruídos** — é o próximo passo natural (face com furo).
 
 ### Limites conhecidos do protótipo (de propósito)
 

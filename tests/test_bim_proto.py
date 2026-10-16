@@ -451,3 +451,59 @@ def test_the_panel_is_a_tab_of_the_tray_and_follows_the_document(win):
     assert pb.childCount() == 1                      # the new wall appeared
     win._on_undo()                      # FRAGILE: the Ctrl+Z slot, which notifies the panels
     assert tree.topLevelItem(0).child(0).childCount() == 0
+
+
+# ---- importing a plan: rectangles -> walls, in one step -----------------------------
+
+def _rect(cx, cy, length, thick, angle_deg, mirror=False):
+    import math
+    c, s = math.cos(math.radians(angle_deg)), math.sin(math.radians(angle_deg))
+    pts = [(-length / 2, -thick / 2), (length / 2, -thick / 2),
+           (length / 2, thick / 2), (-length / 2, thick / 2)]
+    out = [(cx + x * c - y * s, cy + x * s + y * c) for x, y in pts]
+    return list(reversed(out)) if mirror else out
+
+
+@pytest.mark.parametrize("angle", [0, 30, 90, 137, 270])
+@pytest.mark.parametrize("mirror", [False, True])
+def test_a_rectangle_in_any_orientation_becomes_its_wall(angle, mirror):
+    import math
+    rec = mod.wall_from_rectangle(_rect(5, 7, 4.0, 0.2, angle, mirror))
+    assert rec["thickness"] == pytest.approx(0.2)
+    assert math.dist(rec["a"], rec["b"]) == pytest.approx(4.0)
+    assert ((rec["a"][0] + rec["b"][0]) / 2, (rec["a"][1] + rec["b"][1]) / 2) \
+        == pytest.approx((5, 7))
+
+
+def test_a_square_pillar_gets_an_axis_and_its_side_as_thickness():
+    rec = mod.wall_from_rectangle(_rect(0, 0, 0.4, 0.4, 0))
+    assert rec["thickness"] == pytest.approx(0.4)
+
+
+def test_a_non_rectangular_polygon_is_refused():
+    l_shape = [(0, 0), (4, 0), (4, 1), (1, 1), (1, 3), (0, 3)]
+    with pytest.raises(mod.BimProtoError):
+        mod.wall_from_rectangle(l_shape)
+    with pytest.raises(mod.BimProtoError):
+        mod.wall_from_rectangle([(0, 0), (1, 1)])
+
+
+def test_many_walls_are_created_in_one_undo_step(vp):
+    recs = [mod.wall_from_rectangle(_rect(i * 2, 0, 1.5, 0.15, 0))
+            for i in range(25)]
+    made = mod.create_walls(vp, recs, height=2.8)
+    assert len(made) == 25 and len(mod.walls(vp.scene)) == 25
+    assert len(vp.history.undo_stack) == 1                  # NOT one per wall
+    assert _volume(made[0]) == pytest.approx(1.5 * 0.15 * 2.8, rel=1e-4)
+    assert vp.history.undo()
+    assert vp.scene.groups == [] and mod.KEY not in vp.scene.plugin_data
+    assert vp.history.redo()
+    assert len(mod.walls(vp.scene)) == 25
+
+
+def test_one_bad_record_cancels_the_whole_batch(vp):
+    good = mod.wall_from_rectangle(_rect(0, 0, 1.5, 0.15, 0))
+    bad = {"a": [0, 0], "b": [0, 0], "thickness": 0.15}      # no length
+    assert mod.create_walls(vp, [good, bad]) == []
+    assert vp.scene.groups == [] and vp.history.undo_stack == []
+    assert vp.history.last_error

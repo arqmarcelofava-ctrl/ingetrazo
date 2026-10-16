@@ -309,6 +309,72 @@ def create_wall(viewport, a, b, *, thickness=None, height=None,
     return made[0] if _run(viewport, mutate) and made else None
 
 
+def wall_from_rectangle(points, min_fill: float = 0.97) -> dict:
+    """Registro de parede (``a``, ``b``, ``thickness``) a partir de um polígono
+    RETANGULAR em planta, em qualquer orientação ou ordem de vértices: o eixo
+    corre pelo meio do lado maior, a espessura é o lado menor. É o que uma
+    planta importada (alvenaria desenhada como retângulos) precisa para virar
+    parede. Levanta :class:`BimProtoError` se o polígono não preenche pelo
+    menos ``min_fill`` do retângulo mínimo que o contém (L, T, curvo…)."""
+    pts = [(float(x), float(y)) for x, y in points]
+    if len(pts) < 3:
+        raise BimProtoError("a polygon needs at least 3 points")
+    best = None
+    for i in range(len(pts)):
+        dx = pts[(i + 1) % len(pts)][0] - pts[i][0]
+        dy = pts[(i + 1) % len(pts)][1] - pts[i][1]
+        length = math.hypot(dx, dy)
+        if length < _EPS:
+            continue
+        ux, uy = dx / length, dy / length
+        s_ = [x * ux + y * uy for x, y in pts]
+        t_ = [-x * uy + y * ux for x, y in pts]
+        area = (max(s_) - min(s_)) * (max(t_) - min(t_))
+        if best is None or area < best[0]:
+            best = (area, ux, uy, min(s_), max(s_), min(t_), max(t_))
+    if best is None:
+        raise BimProtoError("degenerate polygon")
+    area, ux, uy, s0, s1, t0, t1 = best
+    shoelace = abs(sum(pts[i][0] * pts[(i + 1) % len(pts)][1]
+                       - pts[(i + 1) % len(pts)][0] * pts[i][1]
+                       for i in range(len(pts)))) / 2.0
+    if area <= _EPS or shoelace / area < min_fill:
+        raise BimProtoError("the polygon is not a rectangle")
+    if s1 - s0 < t1 - t0:                       # o lado maior vira o eixo
+        ux, uy, s0, s1, t0, t1 = -uy, ux, t0, t1, -s1, -s0
+    nx, ny = -uy, ux
+    tm = (t0 + t1) / 2.0
+    return {"a": [ux * s0 + nx * tm, uy * s0 + ny * tm],
+            "b": [ux * s1 + nx * tm, uy * s1 + ny * tm],
+            "thickness": t1 - t0}
+
+
+def create_walls(viewport, records, *, height=None, level="PB",
+                 base_offset=0.0) -> list:
+    """Cria várias paredes num ÚNICO passo de desfazer (importar uma planta
+    não pode custar um Ctrl+Z por parede). ``records``: dicts com ``a``, ``b``
+    e ``thickness`` (p.ex. de :func:`wall_from_rectangle`). Tudo ou nada: um
+    registro inválido desfaz o lote inteiro. Devolve os grupos criados, ou
+    ``[]`` se falhou."""
+    records = list(records)
+    made: list = []
+
+    def mutate(scene):
+        scene.plugin_data[KEY] = project_data(scene)
+        for rec in records:
+            g = build_wall_group(scene, {
+                "kind": "wall", "a": rec["a"], "b": rec["b"],
+                "thickness": rec["thickness"],
+                "height": DEFAULTS["height"] if height is None else height,
+                "level": level, "base_offset": base_offset})
+            scene.groups.append(g)
+            made.append(g)
+
+    if not records:
+        return []
+    return made if _run(viewport, mutate) else []
+
+
 def edit_walls(viewport, targets, **changes) -> int:
     """Muda parâmetros (``thickness``, ``height``, ``level``, ``base_offset``,
     ``a``, ``b``) de ``targets`` E regenera o 3D, num único passo de
