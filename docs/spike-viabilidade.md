@@ -321,6 +321,26 @@ Resultado nesta sessão: **33 passaram**. Além disso, rodei a seleção
 da suíte inteira (carregador, atalhos, menu Extensões, plugins empacotados):
 387 passaram, 1 ignorado. **Não rodei a suíte completa** (5 mil testes).
 
+### O que o protótipo desenha (imagens)
+
+Quatro paredes de 0,20 m criadas por `create_wall`, desenhadas pelo passe
+HLR do núcleo (`core.hlr.hlr_drawing`, sem GL). **Não são capturas de tela do
+aplicativo** — são a prova de que a planta e a axonometria saem do modelo sem
+interface gráfica. Gerador: `docs/images/gerar_imagens_spike.py`.
+
+![Planta PB, corte a 1,20 m](images/bim_proto_planta_pb.png)
+
+![Axonometria das mesmas paredes](images/bim_proto_axonometria.png)
+
+(Vetoriais: `images/bim_proto_planta_pb.svg` e `images/bim_proto_axonometria.svg`.
+Os comprimentos em laranja vêm dos parâmetros guardados em `group.ext`.)
+
+**Achado visível nas imagens:** as paredes **não se unem nos cantos**. Cada uma
+é um prisma centrado no seu eixo, então no canto há um quadrado de sobreposição
+(e uma quina que sobra) — na planta aparece como os quadradinhos contornados, na
+axonometria como as arestas duplicadas. Um BIM de verdade precisa de resolução
+de encontros (parede com parede) na regeneração; o protótipo não faz.
+
 ### Limites conhecidos do protótipo (de propósito)
 
 Só parede. Sem vão, sem zona de piso, sem ambientes, sem painel de pavimentos,
