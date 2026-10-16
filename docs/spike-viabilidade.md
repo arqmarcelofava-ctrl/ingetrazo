@@ -32,14 +32,14 @@ dela é movido. A lista completa está na seção 3.
 
 | # | Pergunta | Resposta | Em uma frase |
 |---|----------|----------|--------------|
-| 1 | Painel lateral com árvore (pavimentos, plantas, cortes, 3D, cenários) | **SIM** | `add_panel` aceita qualquer `QWidget`; a árvore é da extensão, não do Navegador nativo. |
+| 1 | Painel lateral com árvore (pavimentos, plantas, cortes, 3D, cenários) | **SIM** (provado na janela real) | `add_panel` aceita qualquer `QWidget`; a árvore é da extensão, não do Navegador nativo. O protótipo agora tem a aba «Project» (imagem na seção 2). |
 | 2 | Guardar dados do projeto inteiro no arquivo salvo (não só em grupos) | **SIM** | `scene.plugin_data[chave]` (projeto) e `group.ext[chave]` (objeto) vão no `.igz`. |
 | 3 | Criar vistas e cenas por código, com plano de corte | **SIM** (com ressalvas) | `SavedView` e `SectionPlane` são públicos e persistem; criar não é desfazível pelo núcleo e a vista não tem `uid`/metadados. |
 | 4 | Ferramentas de desenho 2D (parede por linha com espessura, vão), com inferências e entrada numérica | **PARCIAL** | Clique, inferência, ímã de eixo e VCB funcionam (provado com a parede). Faltam: ferramenta persistente documentada, aresta com espessura, achar a parede sob o cursor. |
 | 5 | Regenerar a geometria 3D a partir de parâmetros guardados, num passo de desfazer | **SIM** | Padrão do Windowizer, provado em `plugins/bim_proto.py`; o núcleo não avisa quando o objeto é movido. |
 | 6 | Acrescentar prancha ou modelo de página ao compositor e exportar PDF ou SVG | **PARCIAL** | Prancha: sim (dados públicos). Modelo: só por arquivo JSON. PDF: só por caminho privado. SVG: não existe. |
 
-As evidências executáveis estão em `tests/test_bim_proto.py` (26 testes) e
+As evidências executáveis estão em `tests/test_bim_proto.py` (28 testes) e
 `tests/test_spike_viabilidade.py` (7 testes); cada afirmação abaixo diz qual
 teste a sustenta, quando há.
 
@@ -316,10 +316,25 @@ pip install -r requirements.txt           # nenhuma dependência nova
 QT_QPA_PLATFORM=offscreen python -m pytest tests/test_bim_proto.py tests/test_spike_viabilidade.py
 ```
 
-Resultado nesta sessão: **33 passaram**. Além disso, rodei a seleção
+Resultado nesta sessão: **35 passaram**. Além disso, rodei a seleção
 `-k "plugin or extension or shortcut or bundle or spec or deferred or menu"`
 da suíte inteira (carregador, atalhos, menu Extensões, plugins empacotados):
 387 passaram, 1 ignorado. **Não rodei a suíte completa** (5 mil testes).
+
+### Painel «Project» (captura da janela real, offscreen)
+
+`plugins/bim_proto.py` registra a aba **Project** na bandeja lateral
+(`add_panel` + `QTreeWidget`): pavimentos (por cota) com suas paredes, vistas e
+pranchas; atualiza sozinha em edição, desfazer, Novo e Abrir
+(`on_document_changed`). A imagem é a `MainWindow` de verdade, renderizada sem
+tela; **o viewport 3D aparece vazio porque não há GL** neste ambiente.
+
+![Janela com a aba Project](images/bim_proto_janela.png)
+
+![Painel Project](images/bim_proto_painel.png)
+
+O painel é só leitura: clicar num nó ainda não aplica a vista nem seleciona a
+parede (ver P1: a rotina "aplicar vista" é privada do painel de Cenas).
 
 ### O que o protótipo desenha (imagens)
 
@@ -343,8 +358,8 @@ de encontros (parede com parede) na regeneração; o protótipo não faz.
 
 ### Limites conhecidos do protótipo (de propósito)
 
-Só parede. Sem vão, sem zona de piso, sem ambientes, sem painel de pavimentos,
-sem planta/corte/prancha geradas. Mover/girar não atualiza o registro (ver P5).
+Só parede. Sem vão, sem zona de piso, sem ambientes, sem planta/corte/prancha geradas pela
+extensão (o painel só lista). Mover/girar não atualiza o registro (ver P5).
 `plugins/bim_proto.py` entra no empacotamento (`ingetrazo.spec:60`,
 `'plugins/*.py'`) e carrega em toda execução do aplicativo — **antes de mesclar,
 mover para `examples/extensions/`** ou excluir do `spec`.
@@ -407,8 +422,8 @@ Separado por quanto dói não mudar. "Contorno" = o que dá para fazer hoje, com
   contrato. Mitigação: a extensão concentra todo acesso a `FRAGILE` num
   arquivo e os testes deste spike falham quando o núcleo muda.
 * **Recomendação:** seguir. Primeiro passo útil: transformar `bim_proto` em
-  contêiner-com-pose (resolve 3.1.2), acrescentar vão (face com furo) e o painel
-  de pavimentos/vistas (`add_panel` + `QTreeWidget`), e abrir ao mesmo tempo as
+  contêiner-com-pose (resolve 3.1.2), acrescentar vão (face com furo), tornar o painel de
+  pavimentos/vistas interativo (aplicar vista, selecionar parede), e abrir ao mesmo tempo as
   propostas 3.1.1 e 3.2.3–3.2.5 contra o núcleo.
 
 ---
@@ -428,10 +443,10 @@ Tudo foi testado sem tela (`QT_QPA_PLATFORM=offscreen`; o Qt avisa
    digitado na barra, Esc/troca de ferramenta pela barra, nem o cursor.
 3. **Menu e atalhos.** `QAction.trigger()` em vez de clicar no menu; a entrada
    do submenu *BIM proto* não foi vista nem traduzida em tela.
-4. **Painel lateral com árvore.** **Não foi construído** — `add_panel` foi
-   verificado por leitura de código e pelos testes existentes do repositório,
-   não por uma árvore de pavimentos funcionando; também a persistência de
-   layout dos painéis.
+4. **Painel lateral com árvore.** A aba aparece e atualiza (captura acima e
+   testes), mas é só leitura: **não verificados** clique/duplo clique que aplica
+   vista ou seleciona parede, e a persistência de layout dos painéis entre
+   sessões.
 5. **Sincronização dos painéis do núcleo** com vistas/cortes criados por código
    (Cenas, Camadas, menu de estilo) após `SavedView.apply`.
 6. **Compositor:** render dos quadros de vista (GL) e PDF com quadros; só foi

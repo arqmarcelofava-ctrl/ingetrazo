@@ -28,6 +28,7 @@ import copy
 import math
 
 from PySide6.QtGui import QVector3D
+from PySide6.QtWidgets import QTreeWidget, QTreeWidgetItem
 
 from core import bim
 # FRAGILE: Group e Mesh são públicos, mas o contrato documentado só fala de
@@ -62,6 +63,8 @@ _TEXTS = {
         "{n} wall(s) updated": "{n} parede(s) atualizada(s)",
         "No BIM proto walls in the document.":
         "Não há paredes do BIM proto no documento.",
+        "Levels": "Pavimentos", "Views": "Vistas", "Sheets": "Pranchas",
+        "Project": "Projeto",
         "Close the group you are editing, then run this again.":
         "Feche o grupo que está editando e repita.",
     },
@@ -434,6 +437,43 @@ class WallTool(AxisMagnet, Tool):
         return g is not None
 
 
+
+# ---------------------------------------------------------------------------
+# Painel: navegador de projeto (árvore)
+# ---------------------------------------------------------------------------
+
+def project_tree_model(scene) -> list:
+    """O que a árvore mostra, como dados puros (testável sem Qt):
+    ``[(rótulo, [(rótulo, [...]) ...]) ...]``."""
+    data = project_data(scene)
+    by_level: dict = {}
+    for g in walls(scene):
+        by_level.setdefault(wall_record(g).get("level"), []).append(g)
+    levels = []
+    for lv in sorted(data["levels"], key=lambda v: float(v.get("z", 0))):
+        kids = [(f"{g.name} — {_len(wall_record(g)):.2f} m", [])
+                for g in by_level.get(lv.get("id"), [])]
+        levels.append((f"{lv.get('name', lv.get('id'))}  (+{float(lv['z']):.2f} m)",
+                       kids))
+    views = [(v.name, []) for v in scene.saved_views]
+    sheets = [(c.name, []) for c in scene.compositions]
+    return [(_t("Levels"), levels), (_t("Views"), views),
+            (_t("Sheets"), sheets)]
+
+
+def _len(rec) -> float:
+    return math.hypot(rec["b"][0] - rec["a"][0], rec["b"][1] - rec["a"][1])
+
+
+def fill_tree(tree, model) -> None:
+    def add(parent, nodes):
+        for label, kids in nodes:
+            item = QTreeWidgetItem(parent, [label])
+            add(item, kids)
+    tree.clear()
+    add(tree.invisibleRootItem(), model)
+    tree.expandAll()
+
 # ---------------------------------------------------------------------------
 # Integração com o app
 # ---------------------------------------------------------------------------
@@ -461,6 +501,16 @@ def setup(app) -> None:
         sub.addAction(_t("Wall"), start_wall)
         sub.addAction(_t("Update 3D"), refresh)
     app.add_outliner_kind(_outliner_kind)
+
+    tree = QTreeWidget()
+    tree.setHeaderHidden(True)
+
+    def refresh_tree():
+        fill_tree(tree, project_tree_model(app.scene))
+
+    refresh_tree()
+    app.on_document_changed(refresh_tree)
+    app.add_panel(_t("Project"), tree)
 
 
 def _outliner_kind(group):

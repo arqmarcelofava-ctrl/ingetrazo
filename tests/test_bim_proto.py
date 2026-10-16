@@ -420,3 +420,34 @@ def test_the_browser_row_says_what_the_group_is(win):
     assert ("Height", "3.00 m") in info["props"]
     from core.group import Group
     assert live._outliner_kind(Group(name="x")) is None
+
+
+# ---- the project tree panel ---------------------------------------------------------
+
+def test_the_tree_model_groups_walls_by_level_and_lists_views_and_sheets(vp):
+    from core.composition import Composicion
+    from core.saved_views import SavedView
+    vp.scene.plugin_data[mod.KEY] = {"levels": [
+        {"id": "P1", "name": "P1", "z": 3.0}, {"id": "PB", "name": "PB", "z": 0.0}]}
+    mod.create_wall(vp, (0, 0), (4, 0), level="PB")
+    mod.create_wall(vp, (0, 0), (2, 0), level="P1")
+    vp.scene.saved_views.append(SavedView("Planta PB"))
+    vp.scene.compositions.append(Composicion(name="A-101"))
+    levels, views, sheets = mod.project_tree_model(vp.scene)
+    assert [lbl for lbl, _ in levels[1]] == ["PB  (+0.00 m)", "P1  (+3.00 m)"]  # by height
+    assert [k for k, _ in levels[1][0][1]] == ["Wall 1 — 4.00 m"]
+    assert [k for k, _ in levels[1][1][1]] == ["Wall 2 — 2.00 m"]
+    assert views[1] == [("Planta PB", [])] and sheets[1] == [("A-101", [])]
+
+
+def test_the_panel_is_a_tab_of_the_tray_and_follows_the_document(win):
+    live = _live()
+    dock = win.extension_panels()["extension_bim_proto"]
+    tree = dock.widget()
+    top = lambda: [tree.topLevelItem(i).text(0) for i in range(tree.topLevelItemCount())]
+    assert top() == ["Levels", "Views", "Sheets"]
+    live.create_wall(win.viewport, (0, 0), (3, 0))
+    pb = tree.topLevelItem(0).child(0)
+    assert pb.childCount() == 1                      # the new wall appeared
+    win._on_undo()                      # FRAGILE: the Ctrl+Z slot, which notifies the panels
+    assert tree.topLevelItem(0).child(0).childCount() == 0
