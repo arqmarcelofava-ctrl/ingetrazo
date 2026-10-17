@@ -79,4 +79,12 @@ bp.create_frames(vp, [
     {"a": [7.0, 0], "b": [7.0, 2.0], "depth": 0.04, "panel_thickness": 0.04, "height": 1.1, "ifc": "IfcRailing"}])
 img = desenhar(vp, yaw=-35, pitch=22, centro=(3.5, 1, 1.4), dist=30, titulo="Esquadrias (montantes + painéis) e guarda-corpo, como grupos IFC", W=800, H=620)
 img.save(str(out / "bim_proto_esquadrias.png"))
+# --- peitoril e folha de porta: parede com uma janela e uma porta aberta a 70°
+vp = novo()
+(w,) = bp.create_walls(vp, [{"a": [0, 0], "b": [5, 0], "thickness": 0.2, "openings": [
+    {"s0": 0.8, "s1": 2.2, "sill": 0.9, "head": 2.1}, {"s0": 3.2, "s1": 4.1, "sill": 0.0, "head": 2.1}]}])
+bp.create_sills(vp, projection=0.08, side=-1)
+bp.create_leaves(vp, angle=70, hinge="a", side=-1)
+img = desenhar(vp, yaw=-30, pitch=18, centro=(2.5, 0, 1.2), dist=30, titulo="Janela com peitoril e porta com folha aberta a 70°", W=700, H=560)
+img.save(str(out / "bim_proto_peitoril_folha.png"))
 print("ok")

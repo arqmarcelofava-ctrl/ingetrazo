@@ -391,7 +391,7 @@ def test_the_plugin_loads_and_adds_its_menu(win):
     assert "BIM proto" in titles
     sub = next(a.menu() for a in win._ext_menu.actions()
                if a.menu() and a.menu().title() == "BIM proto")
-    assert [a.text() for a in sub.actions()] == ["Wall", "Update 3D", "Join corners"]
+    assert [a.text() for a in sub.actions()] == ["Wall", "Update 3D", "Join corners", "Sills", "Door leaves"]
     # WallTool needs `app`, so the loader leaves it out of the one-shot entries
     assert not any(k.startswith("plugin_bim_proto_") for k in win._tools)
 
@@ -951,3 +951,126 @@ def test_a_mullion_touching_the_end_leaves_no_sliver_panel(vp):
     (g,) = mod.create_frames(vp, [_frame(divisions=[0.0250000001, 1.0, 2.9749999])])
     assert len(g.mesh.faces) == 6 * (3 + 2)           # 3 posts + the 2 real panels
     assert _volume(g) is not None
+
+
+# ---- rails (travessas) -------------------------------------------------------------
+
+def test_rails_split_the_panels_and_every_piece_stays_a_closed_solid(vp):
+    rails = [{"z": 0.0, "height": 0.05}, {"z": 1.0, "height": 0.05},
+             {"z": 2.75, "height": 0.05}]
+    (g,) = mod.create_frames(vp, [_frame(b=(2, 0), divisions=[0.025, 1.0, 1.975],
+                                         rails=rails)])
+    cell = 0.925                                 # width between two posts
+    posts = 3 * 0.05 * 0.06 * 2.8
+    rail_v = 2 * 3 * cell * 0.058 * 0.05         # 2 cells x 3 rails (1 mm recess a face)
+    panel_h = 2.8 - 3 * 0.05
+    panels = 2 * cell * 0.01 * panel_h
+    assert _volume(g) == pytest.approx(posts + rail_v + panels, rel=1e-4)
+    assert len(g.mesh.faces) == 6 * (3 + 2 * 3 + 2 * 2)   # posts + rails + 2 panels/cell
+
+
+@pytest.mark.parametrize("bad", [
+    [{"z": 1.0, "height": 0.05}, {"z": 1.02, "height": 0.05}],     # overlap
+    [{"z": 2.78, "height": 0.05}],                                 # above the top
+    [{"z": 1.0, "height": 0}],
+])
+def test_bad_rails_are_refused(vp, bad):
+    assert mod.create_frames(vp, [_frame(rails=bad)]) == []
+
+
+# ---- sills (peitoris) ----------------------------------------------------------------
+
+def _window_wall(vp):
+    return _wall_with(vp, [
+        {"s0": 1.0, "s1": 2.2, "sill": 0.9, "head": 2.1},
+        {"s0": 3.5, "s1": 4.4, "sill": 0.0, "head": 2.1}])
+
+
+def test_a_sill_sits_outside_the_wall_face_under_the_window(vp):
+    _window_wall(vp)
+    (s,) = mod.create_sills(vp)                       # only the window, not the door
+    x0, y0, z0, x1, y1, z1 = _bbox(s)
+    assert (x0, x1) == pytest.approx((0.97, 2.23))    # 3 cm overhang each side
+    assert (y0, y1) == pytest.approx((0.1, 0.15))     # from the face, 5 cm out
+    assert (z0, z1) == pytest.approx((0.87, 0.9))
+    assert _volume(s) == pytest.approx(1.26 * 0.05 * 0.03, rel=1e-4)
+    assert s.ifc["class"] == "IfcMember" and s.name.startswith("Sill")
+    assert mod.wall_record(s) is None and mod.element_record(s)["kind"] == "sill"
+
+
+def test_a_sill_can_go_to_the_other_side_and_is_one_undo_step(vp):
+    _window_wall(vp)
+    steps = len(vp.history.undo_stack)
+    (s,) = mod.create_sills(vp, side=-1, projection=0.08)
+    assert len(vp.history.undo_stack) == steps + 1
+    _, y0, _, _, y1, _ = _bbox(s)
+    assert (y0, y1) == pytest.approx((-0.18, -0.1))
+    vp.history.undo()
+    assert s not in vp.scene.groups
+
+
+def test_no_windows_no_sills(vp):
+    mod.create_walls(vp, [_w((0, 0), (4, 0))])
+    assert mod.create_sills(vp) == []
+
+
+def test_a_sill_that_does_not_fit_is_refused(vp):
+    _window_wall(vp)
+    assert mod.create_sills(vp, overhang=2.0) == []
+    assert len(mod.elements(vp.scene)) == 1           # only the wall
+
+
+# ---- door leaves (folhas de porta) -------------------------------------------------------
+
+def test_a_closed_leaf_fills_the_door_with_a_small_clearance(vp):
+    _window_wall(vp)
+    (lf,) = mod.create_leaves(vp)                     # only the door
+    x0, y0, z0, x1, y1, z1 = _bbox(lf)
+    assert (x0, x1) == pytest.approx((3.51, 4.39))
+    assert (y0, y1) == pytest.approx((-0.02, 0.02))
+    assert (z0, z1) == pytest.approx((0.01, 2.09))
+    assert _volume(lf) == pytest.approx(0.88 * 0.04 * 2.08, rel=1e-4)
+    assert lf.ifc["class"] == "IfcDoor"
+
+
+@pytest.mark.parametrize("hinge,side,hx,sign", [
+    ("a", 1, 3.51, 1), ("b", 1, 4.39, 1), ("a", -1, 3.51, -1)])
+def test_an_open_leaf_swings_about_its_hinge(vp, hinge, side, hx, sign):
+    _window_wall(vp)
+    (lf,) = mod.create_leaves(vp, angle=90, hinge=hinge, side=side)
+    x0, y0, _, x1, y1, _ = _bbox(lf)
+    assert (x0, x1) == pytest.approx((hx - 0.02, hx + 0.02))   # still on the hinge line
+    swung = (y0, y1)
+    assert max(abs(v) for v in swung) == pytest.approx(0.88 + 0.0, abs=0.03)
+    assert all(v * sign >= -0.021 for v in swung)              # to the chosen side
+    assert _volume(lf) == pytest.approx(0.88 * 0.04 * 2.08, rel=1e-4)
+
+
+@pytest.mark.parametrize("bad", [{"angle": 200}, {"clearance": 0.6},
+                                 {"hinge": "x"}, {"side": 0}])
+def test_a_bad_leaf_is_refused_and_nothing_changes(vp, bad):
+    _window_wall(vp)
+    n = len(vp.scene.groups)
+    assert mod.create_leaves(vp, **bad) == []
+    assert len(vp.scene.groups) == n
+
+
+def test_sills_and_leaves_are_rebuilt_by_update_3d_and_survive_reopening(vp, tmp_path):
+    _window_wall(vp)
+    mod.create_sills(vp)
+    mod.create_leaves(vp, angle=45)
+    lf = [g for g in vp.scene.groups if mod.element_record(g)["kind"] == "leaf"][0]
+    good = _geom(lf)
+    lf.mesh = mod.Mesh()
+    steps = len(vp.history.undo_stack)
+    assert mod.update_3d(vp) == 3                     # wall + sill + leaf
+    assert len(vp.history.undo_stack) == steps + 1
+    assert _geom(lf) == good
+    igz.save_scene(vp.scene, tmp_path / "e.igz")
+    sc = Scene()
+    igz.load_into(sc, tmp_path / "e.igz")
+    kinds = sorted(mod.element_record(g)["kind"] for g in sc.groups)
+    assert kinds == ["leaf", "sill", "wall"]
+    back = [g for g in sc.groups if mod.element_record(g)["kind"] == "leaf"][0]
+    assert mod.element_record(back)["angle"] == 45
+    assert _volume(back) == pytest.approx(_volume(lf), rel=1e-4)

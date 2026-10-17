@@ -309,7 +309,9 @@ repositório.
 | Importar planta | `wall_from_rectangle(pontos)` (retângulo em qualquer orientação → eixo + espessura) e `create_walls(viewport, registros)`: lote em **1 passo** de desfazer. |
 | Cantos | `join_walls(registros, tol=0.3)` (função pura) resolve encontros em **L** e em **T** de paredes desenhadas por eixo, sem sobrepor nem deixar fresta (exato a 90°); `join_corners(viewport)` aplica em **1 passo** de desfazer (menu «Unir cantos»). |
 | Esquadrias | `kind: "frame"` em `group.ext`: eixo, `depth`, `height`, `divisions` (centros dos montantes), `mullion`, `panel` (`glass`/`mesh`/`none`), `panel_thickness`, `ifc` (`IfcWindow` ou `IfcRailing`). Sólidos fechados e separados num grupo; `create_frames` em 1 passo; Atualizar 3D também as refaz. |
-| Atualizar 3D | `update_3d(viewport, alvos=None)`: regenera paredes e esquadrias (seleção, ou todas) de seus registros e dos níveis, **todas num único passo**. |
+| Travessas | `rails: [{z, height}]` na esquadria: peças de montante a montante (1 mm mais rasas por face, para continuarem sólidos fechados); os painéis ficam nos intervalos entre elas. |
+| Peitoril / folha de porta | `kind: "sill"` (laje que sai da face, só nas janelas) e `kind: "leaf"` (folha de porta com `hinge`, `side`, `angle`, folga), criados a partir das `openings` por `create_sills` / `create_leaves` (1 passo, tudo ou nada). Menu «Peitoris (janelas)» e «Folhas de porta». |
+| Atualizar 3D | `update_3d(viewport, alvos=None)`: regenera paredes, esquadrias, peitoris e folhas (seleção, ou todas) de seus registros e dos níveis, **todas num único passo**. |
 | Editar + atualizar | `edit_walls(viewport, alvos, **parametros)`: 1 passo, desfaz parâmetros e geometria. |
 | Navegador | `add_outliner_kind` rotula a parede ("Parede", nível, espessura, altura). |
 
@@ -427,9 +429,9 @@ Achados que valem para qualquer planta importada:
    sólidos fechados, 1 passo de desfazer, guardados no `.igz` e refeitos por
    Atualizar 3D. As esquadrias preenchem lacunas da alvenaria na fachada.
    **Alturas são suposição minha, não dado do projeto:** 2,80 m para os sistemas
-   e 1,10 m para o guarda-corpo (o DWG não tem Z). Os trilhos horizontais
-   (travessas), a soleira de pedra, o peitoril e as folhas de porta **não** foram
-   modelados; o painel dos dois sistemas de vidro é inferido da camada, não de um
+   e 1,10 m para o guarda-corpo (o DWG não tem Z). As travessas (3 por vão:
+   no pé, a 1,00 m e no topo, de 5 cm) têm alturas **também supostas** — o DWG
+   só mostra que existem. A soleira de pedra **não** foi modelada; o painel dos dois sistemas de vidro é inferido da camada, não de um
    bloco de painel. Uma falha real achada aqui: um montante que encosta na ponta
    do sistema deixava um painel-fiapo (largura ~0) que quebrava o sólido; painéis
    com menos de 1 mm não são criados.
@@ -440,6 +442,21 @@ Achados que valem para qualquer planta importada:
     8 da base a demolir). Só a camada de alvenaria; diferenças de poucos
     centímetros em peças de fachada aparecem como parcial. Feita com `shapely` em
     scripts de apoio (não é dependência do projeto e não foi adicionada).
+
+11. **Travessas, peitoril e folha de porta (feitos).** No modelo real: travessas nos 4
+    sistemas (78 faces cada, sólidos fechados) e **8 folhas de porta fechadas**, uma
+    em cada abertura de porta, tudo em 1 passo de desfazer cada e reaberto do `.igz`
+    com os mesmos 128 paredes, 7 esquadrias e 8 folhas. **Peitoris: 0** — o DWG de
+    teste não tem janela em parede (só portas e as esquadrias da fachada), então o
+    peitoril só foi exercitado no exemplo sintético. O sentido de abertura das portas
+    não está nos blocos do DWG (o arco da porta não foi lido); por isso as folhas
+    reais ficam **fechadas** (`angle` 0). Falha real achada e corrigida: travessa
+    encostada no pé/topo do montante dividia vértices com ele e o volume do grupo
+    virava `None`.
+
+### Peitoril e folha aberta (exemplo sintético)
+
+![Peitoril e folha](images/bim_proto_peitoril_folha.png)
 
 ### Cantos: antes e depois (exemplo sintético)
 
@@ -461,7 +478,7 @@ não é tocada).
 
 ### Limites conhecidos do protótipo (de propósito)
 
-Parede, vão, canto e esquadria (sem travessas, peitoris nem folhas de porta). Sem zona de piso, sem ambientes, sem planta/corte/prancha geradas pela
+Parede, vão, canto, esquadria (com travessas), peitoril e folha de porta (sem arco de giro desenhado, ferragens, soleira nem batente). Sem zona de piso, sem ambientes, sem planta/corte/prancha geradas pela
 extensão (o painel só lista). Mover/girar não atualiza o registro (ver P5).
 `plugins/bim_proto.py` entra no empacotamento (`ingetrazo.spec:60`,
 `'plugins/*.py'`) e carrega em toda execução do aplicativo — **antes de mesclar,
