@@ -75,7 +75,9 @@ qualquer planta importada:
    resolve L e T. **Não use em planta importada** (as peças do DWG já fecham; com
    tolerância 0,30 m a união mexeria em 77 de 134 encontros). Base × proposta
    (planta real): 27,13 m² de parede mantida, 1,62 m² a demolir, 3,80 m² nova.
-8. Esquadrias da fachada: 4 sistemas (11 montantes) + 3 guarda-corpos reconstruídos
+8. **Decisão do usuário (2026-10-17): as alturas supostas das esquadrias (2,80 m), do
+   guarda-corpo (1,10 m) e das travessas são FICTÍCIAS por enquanto; manter assim até
+   ele trazer a medida real.** Esquadrias da fachada: 4 sistemas (11 montantes) + 3 guarda-corpos reconstruídos
    do DWG; **alturas provisórias suposição do assistente (2,80 m e 1,10 m)**,
    o usuário ainda não confirmou. Travessas (pé, 1,00 m, topo; 5 cm) também supostas.
    Folhas de porta: 8, fechadas (o sentido de abertura não está no DWG). Peitoris: o DWG

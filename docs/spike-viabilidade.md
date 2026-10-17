@@ -428,7 +428,7 @@ Achados que valem para qualquer planta importada:
    (2 de chapa expandida, 2 de vidro) com 11 montantes e 3 guarda-corpos, todos
    sólidos fechados, 1 passo de desfazer, guardados no `.igz` e refeitos por
    Atualizar 3D. As esquadrias preenchem lacunas da alvenaria na fachada.
-   **Alturas são suposição minha, não dado do projeto:** 2,80 m para os sistemas
+   **Alturas são suposição minha, não dado do projeto — o usuário decidiu tratá-las como fictícias por enquanto e mantê-las:** 2,80 m para os sistemas
    e 1,10 m para o guarda-corpo (o DWG não tem Z). As travessas (3 por vão:
    no pé, a 1,00 m e no topo, de 5 cm) têm alturas **também supostas** — o DWG
    só mostra que existem. A soleira de pedra **não** foi modelada; o painel dos dois sistemas de vidro é inferido da camada, não de um
