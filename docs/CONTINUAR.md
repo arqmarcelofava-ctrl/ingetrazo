@@ -34,7 +34,7 @@ GPL-3.0); **nenhum dado real de cliente no repositório**.
 |---|---|
 | Resposta às 6 perguntas de viabilidade, tabela, o que exigiria mudar o núcleo, o que ficou sem verificar | `docs/spike-viabilidade.md` |
 | Protótipo: ferramenta de parede por dois pontos, parâmetros em `group.ext`, níveis em `plugin_data`, **Atualizar 3D** num passo de desfazer, painel «Project» (árvore), importar planta (`wall_from_rectangle`), criação em lote (`create_walls`), vãos de porta (`wall_gaps`), **aberturas de verdade nas paredes** (`openings`, `merge_gap_walls`), **união de cantos** em L/T (`join_walls`, `join_corners`) **esquadrias** de fachada e guarda-corpo com travessas (`kind: "frame"`, `create_frames`), **peitoris** (`create_sills`) e **folhas de porta** (`create_leaves`) | `plugins/bim_proto.py` |
-| Testes (128, todos passam) | `tests/test_bim_proto.py`, `tests/test_spike_viabilidade.py` |
+| Testes (135, todos passam) | `tests/test_bim_proto.py`, `tests/test_spike_viabilidade.py` |
 | Inspeciona qualquer modelo (.igz .glb .skp .dae .obj .stl .dxf .dwg) e desenha planta cortada, frente e axonometria **sem placa de vídeo** | `scripts/inspecionar_modelo.py` |
 | Imagens de exemplo (paredes de teste, janela com o painel) | `docs/images/` |
 
