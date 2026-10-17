@@ -313,6 +313,7 @@ repositório.
 | Peitoril / folha de porta | `kind: "sill"` (laje que sai da face, só nas janelas) e `kind: "leaf"` (folha de porta com `hinge`, `side`, `angle`, folga), criados a partir das `openings` por `create_sills` / `create_leaves` (1 passo, tudo ou nada). Menu «Peitoris (janelas)» e «Folhas de porta». |
 | Porta detalhada | `kind: "leaf"` com `style` `swing` (folha de 35 mm que gira em torno da dobradiça; `frame` = marco com dois batentes rebaixados e travessa; `trim` = guarnição nas duas faces; `arc` = arco de giro como arestas) ou `sliding` (porta de correr de vidro: bastidor de 35 mm, montantes de 50 mm, vidro de 10 mm; `open` 0–1). `create_leaves(..., overrides=f)` dá a cada porta o seu lado, a sua dobradiça e o seu tipo. |
 | Blocos de biblioteca | `load_block_library(caminho.skp)` abre um `.skp` numa cena à parte e devolve `{nome do componente: grupo}`; `create_blocks(viewport, biblioteca, escolher)` põe uma **instância** do componente em cada abertura (`kind: "block"`: eixo, `s`, `block`, `flip`, `side`, `t_offset`), num passo de desfazer. A instância só ganha uma matriz e **compartilha a malha** do componente (editar o bloco muda todas as portas). Convenção do bloco: origem no centro do vão, no chão e no eixo da parede; +X ao longo da parede; +Y para o lado de abrir; +Z para cima. |
+| Planta 2D com projeções | `plan_drawing(cena, corte=1.2)` devolve `cut` (anéis do poché), `below` (linhas do que está abaixo do corte) e `above` (a **projeção** do que está acima: verga sobre a porta, viga, armário alto…, só o que não coincide com o corte nem com o que está abaixo); `render_plan(plano)` pinta numa `QImage` com poché, linha fina e **tracejado**, como no AutoCAD. Dois passes do `core.hlr` (plano de corte normal para cima e para baixo), sem GL; a cena não é alterada. |
 | Atualizar 3D | `update_3d(viewport, alvos=None)`: regenera paredes, esquadrias, peitoris, portas e blocos (seleção, ou todas) de seus registros e dos níveis, **todas num único passo**. |
 | Editar + atualizar | `edit_walls(viewport, alvos, **parametros)`: 1 passo, desfaz parâmetros e geometria. |
 | Navegador | `add_outliner_kind` rotula a parede ("Parede", nível, espessura, altura). |
@@ -499,7 +500,23 @@ Achados que valem para qualquer planta importada:
     recortar o vão **do tamanho do bloco**, centrado na porta do DWG — a escolha do
     bloco vem do **nome** do bloco do DWG, não da largura do vão.
 
+14. **Projeções na planta 2D.** A planta do núcleo (`core.hlr` com plano de corte)
+    joga fora tudo acima do corte, e por isso faltavam as linhas tracejadas de
+    projeção que uma planta de AutoCAD mostra (verga sobre a porta, viga, armário
+    alto, beiral). `plan_drawing` faz um segundo passe com o plano invertido
+    (fica o que está acima), tira o que coincide com o corte e com o que está
+    abaixo, e entrega o resto como `above`. No modelo real: 199 anéis de corte, 2.314
+    segmentos abaixo e **38 segmentos de projeção** (as vergas sobre as portas), em
+    ~16 s (dois passes de linhas, sem GL). Convenção como no desenho à mão: onde a
+    projeção cai sobre uma linha já desenhada (a face do peitoril de uma janela, o topo
+    da parede), vale a linha cheia. **Ainda não:** não há comando na interface (só a
+    função e a imagem), e a planta não vai para a prancha — falta o gancho de pintura
+    por quadro (item 3.1.1); tipos de linha por classe (eixo, projeção, oculto) e
+    cotas também não existem.
+
 ### Peitoril e folha aberta (exemplo sintético)
+
+![Planta com projeções](images/bim_proto_planta_projecoes.png)
 
 ![Peitoril e folha](images/bim_proto_peitoril_folha.png)
 

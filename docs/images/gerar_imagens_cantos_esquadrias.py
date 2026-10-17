@@ -100,4 +100,23 @@ img.save(str(out / "bim_proto_portas_planta.png"))
 img = desenhar(vp, yaw=-25, pitch=22, centro=(2.5, 0, 1.0), dist=30, W=1000, H=620,
                titulo="Porta de abrir detalhada e porta de correr de vidro")
 img.save(str(out / "bim_proto_portas_axo.png"))
+# --- planta 2D com projeções: o tracejado é o que está ACIMA do corte (verga sobre a
+# porta, viga), como na planta do AutoCAD
+from core.i18n import set_language
+set_language("pt-BR")
+from core.group import Group
+vp = novo()
+bp.create_walls(vp, [{"a": [0, 0], "b": [6, 0], "thickness": 0.15, "openings": [
+    {"s0": 1.0, "s1": 1.87, "sill": 0.0, "head": 2.1}, {"s0": 3.5, "s1": 4.9, "sill": 0.9, "head": 2.1}]},
+    {"a": [6, 0], "b": [6, 4], "thickness": 0.15}], height=2.8)
+bp.create_leaves(vp, frame=True, trim=True, arc=True, thickness=0.035, clearance=0.002,
+                 overrides=lambda w, i, o: {"hinge": "b", "side": 1})
+bp.create_sills(vp, projection=0.06, side=1)
+viga = bp.Mesh()
+bp._add_box(viga, (0, 0), (1, 0), (0, 1), 0.0, 6.0, 3.85, 4.0, 2.4, 2.8)       # viga junto à parede
+vp.scene.groups.append(Group(viga, name="viga"))
+armario = bp.Mesh()
+bp._add_box(armario, (0, 0), (1, 0), (0, 1), 2.0, 3.2, 3.6, 4.0, 1.5, 2.2)      # armário alto
+vp.scene.groups.append(Group(armario, name="armário"))
+bp.render_plan(bp.plan_drawing(vp.scene, 1.2), width=1100, title="Planta a 1,20 m: corte, abaixo do corte e projeção (tracejado)").save(str(out / "bim_proto_planta_projecoes.png"))
 print("ok")

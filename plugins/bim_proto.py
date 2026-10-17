@@ -78,6 +78,8 @@ _TEXTS = {
         "Sill": "Peitoril", "Door leaf": "Folha de porta",
         "Sills": "Peitoris (janelas)", "Door leaves": "Folhas de porta",
         "Block": "Bloco",
+        "cut": "corte", "below the cut": "abaixo do corte",
+        "projection (above the cut)": "projeção (acima do corte)",
         "Frame": "Esquadria", "Railing": "Guarda-corpo",
         "{n} wall(s) joined": "{n} parede(s) unida(s)",
         "No wall corners to join.": "Não há cantos de parede para unir.",
@@ -1171,6 +1173,220 @@ def join_corners(viewport, targets=None, tol: float = 0.3) -> int:
         return 0
     _flash(viewport, _t("{n} wall(s) joined", n=len(changed)))
     return len(changed)
+
+
+# ---------------------------------------------------------------------------
+# Planta 2D com projeções (o que está ACIMA do plano de corte, tracejado)
+# ---------------------------------------------------------------------------
+
+def _scene_bounds(scene):
+    """``(mín, máx)`` (x, y, z) de todos os grupos, ou ``None``."""
+    # FRAGILE: world_mesh é público mas fora do contrato documentado.
+    from core.group import world_mesh
+    lo = [math.inf] * 3
+    hi = [-math.inf] * 3
+    for g in scene.groups:
+        for v in world_mesh(g).vertices:
+            p = v.position
+            for i, c in enumerate((p.x(), p.y(), p.z())):
+                lo[i], hi[i] = min(lo[i], c), max(hi[i], c)
+    return (lo, hi) if lo[0] != math.inf else None
+
+
+def _uncovered(a, b, refs, tol, step=0.02, min_len=0.02):
+    """Pedaços do segmento ``a``→``b`` (2D) a mais de ``tol`` de TODOS os
+    segmentos de ``refs`` (array (N, 4)); lista de ((x0, y0), (x1, y1))."""
+    import numpy as np
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    length = float(np.hypot(*(b - a)))
+    if length < _EPS:
+        return []
+    n = max(2, int(length / step) + 1)
+    ts = np.linspace(0.0, 1.0, n)
+    pts = a[None, :] + ts[:, None] * (b - a)[None, :]
+    if len(refs):
+        p0, d = refs[:, :2], refs[:, 2:] - refs[:, :2]
+        dd = np.maximum((d * d).sum(1), 1e-18)
+        near = np.zeros(n, dtype=bool)
+        for i0 in range(0, n, 256):
+            q = pts[i0:i0 + 256]
+            rel = q[:, None, :] - p0[None, :, :]
+            t = np.clip((rel * d[None]).sum(2) / dd[None], 0.0, 1.0)
+            proj = p0[None] + t[..., None] * d[None]
+            near[i0:i0 + 256] = (((q[:, None, :] - proj) ** 2).sum(2)
+                                 <= tol * tol).any(1)
+    else:
+        near = np.zeros(n, dtype=bool)
+    out, start = [], None
+    for i in range(n):
+        if not near[i] and start is None:
+            start = i
+        if (near[i] or i == n - 1) and start is not None:
+            end = i - 1 if near[i] else i
+            if end >= start:
+                # a fronteira cai entre duas amostras: abre meio passo de cada
+                # lado (sem passar das pontas do segmento)
+                t0 = max(0.0, ts[start] - (step / 2) / length) if start > 0 else 0.0
+                t1 = min(1.0, ts[end] + (step / 2) / length) if end < n - 1 else 1.0
+                p, q = a + t0 * (b - a), a + t1 * (b - a)
+                if np.hypot(*(q - p)) >= min_len:
+                    out.append(((float(p[0]), float(p[1])),
+                                (float(q[0]), float(q[1]))))
+            start = None
+    return out
+
+
+def plan_drawing(scene, cut_z: float = 1.2, *, tol: float = 0.005) -> dict:
+    """A planta 2D de ``scene`` cortada a ``cut_z`` (m), como se desenha à mão
+    ou no AutoCAD, em coordenadas de mundo (x, y):
+
+    * ``"cut"``   — anéis (arrays (N, 2)) do que o plano corta: o poché;
+    * ``"below"`` — segmentos ``(x0, y0, x1, y1)`` do que está ABAIXO do corte
+      e se vê de cima (peitoris, folhas, mobília), linha fina;
+    * ``"above"`` — segmentos da PROJEÇÃO do que está ACIMA do corte (verga
+      sobre a porta, travessa do marco, beiral…), para sair TRACEJADO; só o que
+      não coincide com o corte nem com o que está abaixo (``tol`` em metros).
+
+    Usa o passe de linhas do núcleo (``core.hlr``); a cena não é alterada.
+    Sem placa de vídeo."""
+    import numpy as np
+    from core.camera import OrbitCamera
+    from core.hlr import KIND_CUT, hlr_drawing
+    from core.section import SectionPlane
+
+    bounds = _scene_bounds(scene)
+    empty = {"cut": [], "below": np.zeros((0, 4)), "above": np.zeros((0, 4))}
+    if bounds is None:
+        return empty
+    lo, hi = bounds
+    centre = [(lo[i] + hi[i]) / 2 for i in range(3)]
+    diag = math.dist(lo, hi) or 1.0
+
+    def camera():
+        cam = OrbitCamera()
+        cam.perspective = False
+        cam.target = QVector3D(*centre)
+        cam.distance = diag * 2
+        cam.yaw, cam.pitch = -math.pi / 2, math.radians(89.9)
+        return cam
+
+    saved = list(scene.section_planes)
+    flags = [sp.active for sp in saved]
+
+    def run(normal_z):
+        plane = SectionPlane(QVector3D(0, 0, cut_z), QVector3D(0, 0, normal_z))
+        scene.section_planes[:] = [plane]
+        scene.set_active_section(plane)
+        return hlr_drawing(scene, camera(), hidden=False)
+
+    try:
+        below = run(1.0)          # tira o que está acima: o que sobra é a planta
+        above = run(-1.0)         # tira o que está abaixo: sobra a projeção
+    finally:
+        scene.section_planes[:] = saved
+        for sp, f in zip(saved, flags):
+            sp.active = f
+
+    def to_xy(d):
+        """Mapa afim (u, v) -> (x, y) deste desenho, pelos segmentos."""
+        if not len(d.segs):
+            return None
+        uv = np.concatenate([d.segs[:, :2], d.segs[:, 2:]])
+        xy = np.concatenate([d.world[:, 0, :2], d.world[:, 1, :2]])
+        m, *_ = np.linalg.lstsq(np.c_[uv, np.ones(len(uv))], xy, rcond=None)
+        return lambda q: np.c_[q, np.ones(len(q))] @ m
+
+    f_below, f_above = to_xy(below), to_xy(above)
+    cut = [f_below(lp) for lp in below.loops] if f_below else []
+    below_xy = below.world[:, :, :2].reshape(-1, 4) if len(below.segs) \
+        else np.zeros((0, 4))
+    ref = [below_xy]
+    for lp in cut:                       # as bordas do poché também cobrem
+        ref.append(np.c_[lp, np.roll(lp, -1, axis=0)])
+    ref = np.concatenate(ref)
+    proj = []
+    if f_above:
+        for (x0, y0, x1, y1), k in zip(
+                above.world[:, :, :2].reshape(-1, 4), above.kinds):
+            if k == KIND_CUT:            # o próprio corte (já está no poché)
+                continue
+            ref_now = np.concatenate([ref, np.asarray(proj, float).reshape(-1, 4)])
+            for p, q in _uncovered((x0, y0), (x1, y1), ref_now, tol):
+                proj.append((p[0], p[1], q[0], q[1]))
+    return {"cut": cut, "below": below_xy,
+            "above": np.asarray(proj, float).reshape(-1, 4)}
+
+
+def render_plan(plan: dict, width: int = 1600, margin: int = 40, title: str = "",
+                legend: bool = True):
+    """Desenha o resultado de :func:`plan_drawing` numa ``QImage`` — poché cinza,
+    linha fina para o que está abaixo do corte e TRACEJADO para a projeção do que
+    está acima, como na planta do AutoCAD. Sem janela e sem GL."""
+    import numpy as np
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPolygonF
+
+    pts = [lp for lp in plan["cut"]]
+    for key in ("below", "above"):
+        if len(plan[key]):
+            pts.append(plan[key][:, :2])
+            pts.append(plan[key][:, 2:])
+    if not pts:
+        img = QImage(width, 200, QImage.Format_RGB32)
+        img.fill(QColor("white"))
+        return img
+    allp = np.concatenate(pts)
+    x0, y0 = allp.min(0)
+    x1, y1 = allp.max(0)
+    k = (width - 2 * margin) / max(x1 - x0, 1e-6)
+    foot = 60 if legend else 20
+    height = int((y1 - y0) * k) + 2 * margin + foot
+    img = QImage(width, height, QImage.Format_RGB32)
+    img.fill(QColor("white"))
+    p = QPainter(img)
+    p.setRenderHint(QPainter.Antialiasing)
+
+    def X(x):
+        return margin + (x - x0) * k
+
+    def Y(y):
+        return height - margin - foot + 20 - (y - y0) * k
+
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor("#3a3f48"))
+    for lp in plan["cut"]:
+        p.drawPolygon(QPolygonF([QPointF(X(a), Y(b)) for a, b in lp]))
+    p.setPen(QPen(QColor("#222"), 0.9))
+    for a, b, c, d in plan["below"]:
+        p.drawLine(QPointF(X(a), Y(b)), QPointF(X(c), Y(d)))
+    dash = QPen(QColor("#b04a00"), 1.1, Qt.CustomDashLine)
+    dash.setDashPattern([6, 4])
+    p.setPen(dash)
+    for a, b, c, d in plan["above"]:
+        p.drawLine(QPointF(X(a), Y(b)), QPointF(X(c), Y(d)))
+    p.setFont(QFont("DejaVu Sans", 12))
+    p.setPen(QColor("#222"))
+    if title:
+        p.drawText(14, 24, title)
+    if legend:
+        ly = height - 22
+        p.setBrush(QColor("#3a3f48"))
+        p.setPen(Qt.NoPen)
+        p.drawRect(14, ly - 10, 26, 12)
+        p.setPen(QColor("#222"))
+        p.drawText(48, ly, _t("cut"))
+        p.setPen(QPen(QColor("#222"), 1.2))
+        p.drawLine(190, ly - 4, 226, ly - 4)
+        p.setPen(QColor("#222"))
+        p.drawText(234, ly, _t("below the cut"))
+        dash2 = QPen(QColor("#b04a00"), 1.4, Qt.CustomDashLine)
+        dash2.setDashPattern([5, 3])
+        p.setPen(dash2)
+        p.drawLine(430, ly - 4, 480, ly - 4)
+        p.setPen(QColor("#222"))
+        p.drawText(488, ly, _t("projection (above the cut)"))
+    p.end()
+    return img
 
 
 # ---------------------------------------------------------------------------

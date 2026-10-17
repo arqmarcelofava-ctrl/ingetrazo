@@ -1282,3 +1282,61 @@ def test_update_3d_puts_a_moved_block_back_and_blocks_survive_reopening(vp, tmp_
     back = [g for g in sc.groups if (mod.element_record(g) or {}).get("kind") == "block"][0]
     assert mod.element_record(back)["block"] == "PORTA_80"
     assert _world_bbox(back) == pytest.approx(good)
+
+
+# ---- 2D plan with projections (dashed lines of what lies above the cut) ----------------
+
+def _on(seg, x0, x1, y):
+    return (abs(seg[1] - y) < 0.011 and abs(seg[3] - y) < 0.011
+            and min(seg[0], seg[2]) >= x0 - 0.02 and max(seg[0], seg[2]) <= x1 + 0.02)
+
+
+def test_the_header_over_a_door_is_projected_dashed_across_the_opening(vp):
+    _wall_with(vp, [{"s0": 1.5, "s1": 2.5, "sill": 0.0, "head": 2.1}], length=4.0)
+    plan = mod.plan_drawing(vp.scene, 1.2)
+    assert len(plan["cut"]) == 2                      # the wall either side of the door
+    above = [tuple(map(float, s)) for s in plan["above"]]
+    assert above and all(_on(s, 1.5, 2.5, 0.1) or _on(s, 1.5, 2.5, -0.1) for s in above)
+    for y in (0.1, -0.1):                             # both faces, most of the opening
+        assert sum(abs(s[2] - s[0]) for s in above if _on(s, 1.5, 2.5, y)) > 0.9
+
+
+def test_a_wall_without_openings_has_no_projection_and_nothing_is_left_changed(vp):
+    mod.create_walls(vp, [_w((0, 0), (4, 0), 0.2)])
+    planes_before = list(vp.scene.section_planes)
+    plan = mod.plan_drawing(vp.scene, 1.2)
+    assert len(plan["above"]) == 0 and len(plan["cut"]) == 1
+    assert vp.scene.section_planes == planes_before    # the cut was only for the drawing
+
+
+def test_a_beam_above_the_cut_is_projected_and_a_sill_below_it_is_not(vp):
+    from core.group import Group
+    mod.create_walls(vp, [_w((0, 0), (4, 0), 0.2)], height=2.8)
+    beam = mod.Mesh()
+    mod._add_box(beam, (0, 0), (1, 0), (0, 1), 6.0, 8.0, 1.0, 1.4, 2.2, 2.6)
+    vp.scene.groups.append(Group(beam, name="viga"))
+    low = mod.Mesh()
+    mod._add_box(low, (0, 0), (1, 0), (0, 1), 6.0, 7.0, 3.0, 3.3, 0.0, 0.4)
+    vp.scene.groups.append(Group(low, name="banco"))
+    plan = mod.plan_drawing(vp.scene, 1.2)
+    in_beam = [s for s in plan["above"] if 5.95 <= min(s[0], s[2]) and max(s[0], s[2]) <= 8.05
+               and 0.95 <= min(s[1], s[3]) and max(s[1], s[3]) <= 1.45]
+    assert len(in_beam) >= 4                           # its outline, dashed
+    assert not any(5.95 <= min(s[0], s[2]) <= 7.05 and 2.95 <= s[1] <= 3.35 for s in plan["above"])
+    assert any(5.95 <= min(s[0], s[2]) <= 7.05 and 2.95 <= s[1] <= 3.35 for s in plan["below"])
+
+
+def test_the_plan_renders_with_a_dashed_projection(vp):
+    _wall_with(vp, [{"s0": 1.5, "s1": 2.5, "sill": 0.0, "head": 2.1}], length=4.0)
+    img = mod.render_plan(mod.plan_drawing(vp.scene, 1.2), width=800, title="t")
+    assert img.width() == 800 and img.height() > 100
+    colours = {img.pixelColor(x, y).name() for x in range(0, 800, 2)
+               for y in range(0, img.height(), 2)}
+    assert "#3a3f48" in colours                       # poché
+    assert any(c.startswith("#b0") or c.startswith("#c") for c in colours)  # dashed ink
+
+
+def test_an_empty_scene_gives_an_empty_plan(vp):
+    plan = mod.plan_drawing(vp.scene)
+    assert plan["cut"] == [] and len(plan["below"]) == 0 and len(plan["above"]) == 0
+    assert mod.render_plan(plan).height() == 200
