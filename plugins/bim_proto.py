@@ -27,8 +27,12 @@ from __future__ import annotations
 import copy
 import math
 
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QVector3D
-from PySide6.QtWidgets import QTreeWidget, QTreeWidgetItem
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
+                               QGridLayout, QLabel, QMessageBox, QTextEdit,
+                               QToolButton, QTreeWidget, QTreeWidgetItem,
+                               QVBoxLayout, QWidget)
 
 from core import bim
 # FRAGILE: Group e Mesh são públicos, mas o contrato documentado só fala de
@@ -78,6 +82,18 @@ _TEXTS = {
         "Sill": "Peitoril", "Door leaf": "Folha de porta",
         "Sills": "Peitoris (janelas)", "Door leaves": "Folhas de porta",
         "Block": "Bloco", "Room": "Ambiente",
+        "Draw": "Desenhar", "Openings": "Aberturas", "Rooms": "Ambientes",
+        "Plan 2D": "Planta 2D", "Elements": "Elementos",
+        "Doors": "Portas", "Swing": "Giro", "Detect rooms": "Detectar",
+        "Area table": "Áreas", "Generate plan…": "Gerar planta…",
+        "Import DWG": "Importar DWG", "Block library": "Biblioteca",
+        "Soon": "Em breve", "Cut at (m)": "Corte a (m)", "Style": "Estilo",
+        "Office": "Escritório", "CAD": "CAD", "Room names": "Nomes dos ambientes",
+        "{n} room(s) detected": "{n} ambiente(s) detectado(s)",
+        "No closed rooms found.": "Nenhum ambiente fechado encontrado.",
+        "Plan saved: {path}": "Planta salva: {path}",
+        "No rooms yet.": "Ainda não há ambientes.",
+        "Estimated net area (m²)": "Área útil estimada (m²)",
         "cut": "corte", "below the cut": "abaixo do corte",
         "projection (above the cut)": "projeção (acima do corte)",
         "Frame": "Esquadria", "Railing": "Guarda-corpo",
@@ -1686,6 +1702,13 @@ def plan_drawing(scene, cut_z: float = 1.2, *, tol: float = 0.005) -> dict:
 
     saved = list(scene.section_planes)
     flags = [sp.active for sp in saved]
+    # as zonas de piso dos ambientes não são matéria: tapariam as linhas do piso
+    # (arco de giro, soleiras) na vista de cima; saem do desenho e voltam depois
+    all_groups = list(scene.groups)
+    room_info = [{"name": g.name, "outline": r["outline"], "holes": r["holes"],
+                  "area": room_area(r)} for g in all_groups for r in [room_record(g)]
+                 if r is not None]
+    scene.groups[:] = [g for g in all_groups if room_record(g) is None]
 
     def run(normal_z):
         plane = SectionPlane(QVector3D(0, 0, cut_z), QVector3D(0, 0, normal_z))
@@ -1697,6 +1720,7 @@ def plan_drawing(scene, cut_z: float = 1.2, *, tol: float = 0.005) -> dict:
         below = run(1.0)          # tira o que está acima: o que sobra é a planta
         above = run(-1.0)         # tira o que está abaixo: sobra a projeção
     finally:
+        scene.groups[:] = all_groups
         scene.section_planes[:] = saved
         for sp, f in zip(saved, flags):
             sp.active = f
@@ -1729,9 +1753,7 @@ def plan_drawing(scene, cut_z: float = 1.2, *, tol: float = 0.005) -> dict:
                 proj.append((p[0], p[1], q[0], q[1]))
     return {"cut": cut, "below": below_xy,
             "above": np.asarray(proj, float).reshape(-1, 4),
-            "rooms": [{"name": g.name, "outline": r["outline"], "holes": r["holes"],
-                       "area": room_area(r)}
-                      for g in rooms(scene) for r in [room_record(g)]]}
+            "rooms": room_info}
 
 
 #: Estilos da planta 2D. Larguras e tracejado em PONTOS de papel. ``"ao"`` foi MEDIDO
@@ -2376,6 +2398,244 @@ def fill_tree(tree, model) -> None:
     tree.expandAll()
 
 # ---------------------------------------------------------------------------
+# Painel «BIM»: ícones e botões (a cara da extensão)
+# ---------------------------------------------------------------------------
+
+def update_rooms(viewport, *, level="PB") -> int:
+    """Refaz os ambientes do documento pelas paredes e esquadrias de hoje — UM passo
+    de desfazer. Os nomes dados antes continuam nos ambientes que ocupam o mesmo
+    lugar (o centro de um cai dentro do outro). Devolve quantos ambientes há."""
+    scene = viewport.scene
+    recs = [element_record(g) for g in scene.groups
+            if (element_record(g) or {}).get("kind") in ("wall", "frame")]
+    found = detect_rooms(recs)
+    old = [(g.name, room_record(g)) for g in rooms(scene)]
+
+    def centre(ring):
+        return (sum(p[0] for p in ring) / len(ring), sum(p[1] for p in ring) / len(ring))
+
+    names = []
+    for f in found:
+        nm = None
+        for name, rec in old:
+            if _inside(centre(rec["outline"]), f["outline"]):
+                nm = name
+                break
+        names.append(nm)
+    if not found and not old:
+        return 0
+
+    def mutate(sc):
+        sc.groups[:] = [g for g in sc.groups if room_record(g) is None]
+        sc.plugin_data[KEY] = project_data(sc)
+        for f, nm in zip(found, names):
+            g = _build_piece(sc, dict(f, level=level, name=nm or ""), "room")
+            if nm:
+                g.name = nm
+                g.ifc = {"class": "IfcSpace", "name": nm}
+            sc.groups.append(g)
+
+    return len(found) if _run(viewport, mutate) else -1
+
+
+def bim_icon(key: str):
+    """Ícone de 48 px desenhado com QPainter, no estilo do programa (traço na cor do
+    texto da paleta e destaque laranja) — sem arquivos de imagem."""
+    from PySide6.QtCore import QPointF, QRectF, Qt
+    from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap, QPolygonF
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance()
+    ink = app.palette().windowText().color() if app else QColor(40, 44, 52)
+    ink = QColor(ink.red(), ink.green(), ink.blue())
+    acc = QColor("#f26b21")
+    pm = QPixmap(48, 48)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    line = QPen(ink, 3.0)
+    line.setJoinStyle(Qt.RoundJoin)
+    line.setCapStyle(Qt.RoundCap)
+    p.setPen(line)
+
+    def accent(w=3.0):
+        q = QPen(acc, w)
+        q.setCapStyle(Qt.RoundCap)
+        p.setPen(q)
+
+    def wall(x0, x1, y):
+        p.setPen(Qt.NoPen)
+        p.setBrush(ink)
+        p.drawRect(QRectF(x0, y - 4, x1 - x0, 8))
+        p.setPen(line)
+        p.setBrush(Qt.NoBrush)
+
+    if key == "wall":
+        wall(6, 42, 24)
+        accent(); p.drawPoint(QPointF(6, 24)); p.drawPoint(QPointF(42, 24))
+    elif key == "door":
+        wall(6, 16, 36); wall(32, 42, 36)
+        p.drawLine(QPointF(16, 36), QPointF(16, 10))
+        accent(2.4)
+        p.drawArc(QRectF(-10, 10, 52, 52), 0, 90 * 16)
+    elif key == "window":
+        wall(6, 14, 24); wall(34, 42, 24)
+        accent(2.6)
+        p.drawLine(QPointF(14, 22), QPointF(34, 22)); p.drawLine(QPointF(14, 26), QPointF(34, 26))
+    elif key == "sill":
+        wall(6, 42, 20)
+        accent(3.4); p.drawLine(QPointF(10, 30), QPointF(38, 30))
+    elif key == "join":
+        p.setPen(Qt.NoPen); p.setBrush(ink)
+        p.drawRect(QRectF(8, 8, 8, 32)); p.drawRect(QRectF(8, 32, 32, 8))
+        p.setBrush(acc); p.drawRect(QRectF(8, 32, 8, 8))
+    elif key == "room":
+        dash = QPen(ink, 2.4, Qt.DashLine)
+        p.setPen(dash); p.setBrush(QColor(242, 107, 33, 40))
+        p.drawPolygon(QPolygonF([QPointF(9, 10), QPointF(39, 10), QPointF(39, 28),
+                                 QPointF(28, 28), QPointF(28, 39), QPointF(9, 39)]))
+        accent(4.5); p.drawPoint(QPointF(18, 22))
+    elif key == "update":
+        accent(3.2)
+        p.drawArc(QRectF(9, 9, 30, 30), 40 * 16, 140 * 16)
+        p.drawArc(QRectF(9, 9, 30, 30), 220 * 16, 140 * 16)
+        p.setPen(Qt.NoPen); p.setBrush(acc)
+        p.drawPolygon(QPolygonF([QPointF(40, 12), QPointF(40, 24), QPointF(29, 18)]))
+        p.drawPolygon(QPolygonF([QPointF(8, 36), QPointF(8, 24), QPointF(19, 30)]))
+    elif key == "plan":
+        wall(8, 40, 14); wall(8, 40, 38)
+        p.setPen(Qt.NoPen); p.setBrush(ink); p.drawRect(QRectF(8, 14, 8, 24))
+        q = QPen(acc, 2.4, Qt.DashLine); p.setPen(q); p.drawLine(QPointF(20, 26), QPointF(40, 26))
+    elif key == "table":
+        p.drawRect(QRectF(8, 10, 32, 28))
+        p.drawLine(QPointF(8, 20), QPointF(40, 20)); p.drawLine(QPointF(8, 29), QPointF(40, 29))
+        accent(); p.drawLine(QPointF(22, 10), QPointF(22, 38))
+    elif key == "import":
+        accent(3.2); p.drawLine(QPointF(24, 6), QPointF(24, 26))
+        p.drawLine(QPointF(16, 19), QPointF(24, 27)); p.drawLine(QPointF(32, 19), QPointF(24, 27))
+        p.setPen(line); p.drawLine(QPointF(8, 34), QPointF(8, 40)); p.drawLine(QPointF(8, 40), QPointF(40, 40))
+        p.drawLine(QPointF(40, 40), QPointF(40, 34))
+    elif key == "blocks":
+        p.drawRect(QRectF(8, 24, 14, 14)); p.drawRect(QRectF(26, 24, 14, 14))
+        accent(); p.drawRect(QRectF(17, 8, 14, 14))
+    p.end()
+    return QIcon(pm)
+
+
+class BimPanel(QWidget):
+    """O painel «BIM»: botões com ícone (desenhar, aberturas, ambientes, planta 2D,
+    atualizar) e, embaixo, a árvore do projeto. Cada botão chama uma função pública
+    deste arquivo. O que ainda não existe aparece apagado, com «Em breve»."""
+
+    #: ganchos que os testes trocam (nada de janela modal na prova)
+    choose_save_path = staticmethod(lambda: QFileDialog.getSaveFileName(
+        None, _t("Generate plan…"), "planta.png", "PNG (*.png)")[0])
+    show_text = staticmethod(lambda title, text: QMessageBox.information(None, title, text))
+
+    def __init__(self, app, start_wall) -> None:
+        super().__init__()
+        self.app = app
+        self.setObjectName("bim_proto_panel")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(6, 6, 6, 6)
+        lay.setSpacing(4)
+        self.buttons: dict = {}
+
+        def button(key, text, tip, fn, enabled=True):
+            b = QToolButton()
+            b.setObjectName("bim_btn_" + key)
+            b.setText(text)
+            b.setIcon(bim_icon(key))
+            b.setIconSize(QSize(30, 30))
+            b.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+            b.setAutoRaise(True)
+            b.setMinimumWidth(66)
+            b.setToolTip(tip if enabled else f"{tip} — {_t('Soon')}")
+            b.setEnabled(enabled)
+            if fn is not None:
+                b.clicked.connect(lambda _=False, f=fn: f())
+            self.buttons[key] = b
+            return b
+
+        def section(title, widgets):
+            lab = QLabel(title.upper())
+            f = lab.font()
+            f.setBold(True)
+            f.setPointSizeF(max(f.pointSizeF() - 1.5, 7))
+            lab.setFont(f)
+            lab.setContentsMargins(2, 6, 0, 0)
+            lay.addWidget(lab)
+            grid = QGridLayout()
+            grid.setSpacing(2)
+            for k, w in enumerate(widgets):
+                grid.addWidget(w, k // 4, k % 4)
+            lay.addLayout(grid)
+
+        vp = lambda: app.viewport
+        section(_t("Draw"), [
+            button("wall", _t("Wall"), _t("Draw a wall from two points, with thickness, height and base level."), start_wall),
+            button("import", _t("Import DWG"), _t("Import DWG"), None, enabled=False),
+            button("blocks", _t("Block library"), _t("Block library"), None, enabled=False)])
+        section(_t("Openings"), [
+            button("join", _t("Join corners"), _t("Join corners"), lambda: join_corners(vp())),
+            button("door", _t("Doors"), _t("Door leaves"), lambda: create_leaves(
+                vp(), auto_swing=True, frame=True, trim=True, arc=True,
+                thickness=0.035, clearance=0.002)),
+            button("window", _t("Sills"), _t("Sills"), lambda: create_sills(vp()))])
+        section(_t("Rooms"), [
+            button("room", _t("Detect rooms"), _t("Detect rooms"), self.detect),
+            button("table", _t("Area table"), _t("Estimated net area (m²)"), self.table)])
+        section(_t("Plan 2D"), [button("plan", _t("Plan 2D"), _t("Generate plan…"), self.plan)])
+        opts = QGridLayout()
+        self.cut = QDoubleSpinBox()
+        self.cut.setRange(0.1, 10.0)
+        self.cut.setSingleStep(0.1)
+        self.cut.setValue(1.20)
+        self.cut.setSuffix(" m")
+        self.style = QComboBox()
+        self.style.addItem(_t("Office"), "ao")
+        self.style.addItem(_t("CAD"), "cad")
+        self.labels = QCheckBox(_t("Room names"))
+        opts.addWidget(QLabel(_t("Cut at (m)")), 0, 0)
+        opts.addWidget(self.cut, 0, 1)
+        opts.addWidget(QLabel(_t("Style")), 1, 0)
+        opts.addWidget(self.style, 1, 1)
+        opts.addWidget(self.labels, 2, 0, 1, 2)
+        lay.addLayout(opts)
+        section(_t("Elements"), [button("update", _t("Update 3D"), _t("Rebuild the walls' 3D from their stored parameters."), self.update)])
+        self.tree = QTreeWidget()
+        self.tree.setHeaderHidden(True)
+        lay.addWidget(self.tree, 1)
+
+    def update(self):
+        sel = []
+        scene = self.app.scene
+        for e in scene.selection:
+            g = getattr(e, "owner", None) or e
+            if g in scene.groups and element_record(g) is not None and g not in sel:
+                sel.append(g)
+        update_3d(self.app.viewport, sel or None)
+
+    def detect(self):
+        n = update_rooms(self.app.viewport)
+        _flash(self.app.viewport, _t("{n} room(s) detected", n=n) if n > 0
+               else _t("No closed rooms found."))
+
+    def table(self):
+        rows = area_table(self.app.scene)
+        text = "\n".join(f"{nm}\t{ar}" for nm, ar in rows) or _t("No rooms yet.")
+        self.show_text(_t("Estimated net area (m²)"), text)
+
+    def plan(self):
+        path = self.choose_save_path()
+        if not path:
+            return
+        plan = plan_drawing(self.app.scene, self.cut.value())
+        render_plan(plan, width=2400, style=self.style.currentData(),
+                    labels=self.labels.isChecked()).save(path)
+        _flash(self.app.viewport, _t("Plan saved: {path}", path=path))
+
+
+# ---------------------------------------------------------------------------
 # Integração com o app
 # ---------------------------------------------------------------------------
 
@@ -2406,15 +2666,14 @@ def setup(app) -> None:
         sub.addAction(_t("Door leaves"), lambda: create_leaves(app.viewport))
     app.add_outliner_kind(_outliner_kind)
 
-    tree = QTreeWidget()
-    tree.setHeaderHidden(True)
+    panel = BimPanel(app, start_wall)
 
     def refresh_tree():
-        fill_tree(tree, project_tree_model(app.scene))
+        fill_tree(panel.tree, project_tree_model(app.scene))
 
     refresh_tree()
     app.on_document_changed(refresh_tree)
-    app.add_panel(_t("Project"), tree)
+    app.add_panel(_t("Project"), panel)
 
 
 def _outliner_kind(group):

@@ -559,6 +559,25 @@ Achados que valem para qualquer planta importada:
     em 1 cm, o padrão); o DWG de teste não tem nomes de cômodo (só um texto
     «proj. pavimento superior»).
 
+18. **A cara da extensão na janela real: painel de botões com ícone.** A API de extensão
+    (`views/extension_api.py`) oferece menu (`add_menu`), painel lateral (`add_panel`), menu
+    de contexto (`add_context_menu`), sobreposição na vista (`add_overlay`) e árvore
+    (`add_outliner_kind`) — **não oferece barra de ferramentas própria**: os ícones da
+    barra da esquerda/do alto são do núcleo. Por isso a extensão ganhou o painel **«Projeto»**
+    com botões de ícone agrupados (Desenhar, Aberturas, Ambientes, Planta 2D, Elementos)
+    e, embaixo, a árvore. Os ícones são **desenhados com QPainter** (traço na cor do texto
+    da paleta, destaque laranja, 48 px), como os do programa, sem arquivos de imagem.
+    Cada botão chama uma função pública deste arquivo; o que ainda não existe
+    (Importar DWG, Biblioteca de blocos) aparece apagado com «Em breve». Fotografado na
+    **janela real** (Qt sem tela, em português; o 3D não desenha sem placa de vídeo, então a
+    planta entra por montagem). Pontos que o teste não cobre: aparência em tema escuro,
+    em tela de alta densidade e a persistência do tamanho do painel. Se o produto quiser
+    os botões na barra do núcleo, isso é uma mudança de núcleo (item novo em 3.3).
+
+![Painel BIM na janela](images/bim_proto_janela_painel.png)
+
+![Painel BIM, só os botões](images/bim_proto_painel_botoes.png)
+
 ### Peitoril e folha aberta (exemplo sintético)
 
 ![Planta com projeções](images/bim_proto_planta_projecoes.png)
@@ -639,6 +658,7 @@ Separado por quanto dói não mudar. "Contorno" = o que dá para fazer hoje, com
 
 ### 3.3 Desejável (não bloqueia o Conceito)
 
+- **API de barra de ferramentas** para a extensão pôr os ícones na barra do núcleo (hoje só há menu, painel e menu de contexto).
 7. Nós virtuais no Navegador nativo (pavimentos/vistas) em vez de árvore
    paralela — só se a decisão de produto for "um navegador só".
 8. `{campos}` de prancha extensíveis (`field_values`), p.ex. `{pavimento}`.

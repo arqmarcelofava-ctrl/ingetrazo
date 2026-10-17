@@ -443,7 +443,7 @@ def test_the_tree_model_groups_walls_by_level_and_lists_views_and_sheets(vp):
 def test_the_panel_is_a_tab_of_the_tray_and_follows_the_document(win):
     live = _live()
     dock = win.extension_panels()["extension_bim_proto"]
-    tree = dock.widget()
+    tree = dock.widget().tree
     top = lambda: [tree.topLevelItem(i).text(0) for i in range(tree.topLevelItemCount())]
     assert top() == ["Levels", "Views", "Sheets"]
     live.create_wall(win.viewport, (0, 0), (3, 0))
@@ -1530,3 +1530,92 @@ def test_the_plan_labels_the_rooms(vp):
     plain = mod.render_plan(plan, width=800)
     labelled = mod.render_plan(plan, width=800, labels=True)
     assert plain.size() == labelled.size() and plain != labelled
+
+
+# ---- the panel: icon buttons that call the plugin's functions ------------------------------
+
+def _panel(win):
+    return win.extension_panels()["extension_bim_proto"].widget()
+
+
+def _box(live, win):
+    return live.create_walls(win.viewport, [
+        {"a": [0, 0], "b": [6, 0], "thickness": 0.2}, {"a": [6, 0], "b": [6, 4], "thickness": 0.2},
+        {"a": [6, 4], "b": [0, 4], "thickness": 0.2}, {"a": [0, 4], "b": [0, 0], "thickness": 0.2}])
+
+
+def test_the_panel_has_icon_buttons_and_the_unbuilt_ones_are_dimmed(win):
+    panel = _panel(win)
+    assert {"wall", "join", "door", "window", "room", "table", "plan", "update"} <= set(panel.buttons)
+    for key in ("wall", "join", "door", "room", "plan", "update"):
+        b = panel.buttons[key]
+        assert b.isEnabled() and not b.icon().isNull() and b.toolTip()
+    for key in ("import", "blocks"):                 # not built yet: dimmed, tooltip says so
+        assert not panel.buttons[key].isEnabled() and "Soon" in panel.buttons[key].toolTip()
+
+
+def test_the_icons_are_drawn_not_loaded_and_all_different():
+    live = _live()
+    imgs = {k: live.bim_icon(k).pixmap(48, 48).toImage() for k in
+            ("wall", "door", "window", "sill", "join", "room", "update", "plan", "table",
+             "import", "blocks")}
+    assert all(not i.isNull() and i.width() == 48 for i in imgs.values())
+    assert len({bytes(i.constBits()) for i in imgs.values()}) == len(imgs)
+
+
+def test_clicking_the_join_and_room_buttons_does_the_work(win):
+    live = _live()
+    panel = _panel(win)
+    _box(live, win)
+    panel.buttons["join"].click()
+    panel.buttons["room"].click()
+    (g,) = live.rooms(win.viewport.scene)
+    assert live.room_area(live.room_record(g)) == pytest.approx((6 - 0.2) * (4 - 0.2), rel=0.01)
+    steps = len(win.viewport.history.undo_stack)
+    panel.buttons["room"].click()                    # again: replaces, keeps the name, one step
+    assert len(live.rooms(win.viewport.scene)) == 1
+    assert len(win.viewport.history.undo_stack) == steps + 1
+
+
+def test_the_area_table_and_the_plan_buttons_use_their_hooks(win, tmp_path):
+    live = _live()
+    panel = _panel(win)
+    _box(live, win)
+    panel.buttons["room"].click()
+    shown = []
+    panel.show_text = lambda title, text: shown.append(text)
+    panel.buttons["table"].click()
+    assert shown and "," in shown[0]
+    out = tmp_path / "planta.png"
+    panel.choose_save_path = lambda: str(out)
+    panel.labels.setChecked(True)
+    panel.buttons["plan"].click()
+    assert out.exists() and out.stat().st_size > 1000
+    panel.choose_save_path = lambda: ""              # cancelled dialog: nothing written
+    panel.buttons["plan"].click()
+
+
+def test_update_rooms_keeps_the_given_name_when_the_room_stays(vp):
+    box = [dict(_w(a, b, 0.2), level="PB") for a, b in
+           (((0, 0), (6, 0)), ((6, 0), (6, 4)), ((6, 4), (0, 4)), ((0, 4), (0, 0)))]
+    mod.create_walls(vp, box)
+    assert mod.update_rooms(vp) == 1
+    (g,) = mod.rooms(vp.scene)
+    g.name = "Sala"
+    mod.update_rooms(vp)
+    assert [x.name for x in mod.rooms(vp.scene)] == ["Sala"]
+    assert mod.update_rooms(FakeViewport()) == 0
+
+
+def test_room_floor_zones_do_not_hide_the_swing_arc_in_the_plan(vp):
+    walls_ = [dict(_w(a, b, 0.2), level="PB") for a, b in
+              (((0, 0), (6, 0)), ((6, 0), (6, 4)), ((6, 4), (0, 4)), ((0, 4), (0, 0)))]
+    walls_[0]["openings"] = [{"s0": 1.5, "s1": 2.4, "sill": 0.0, "head": 2.1}]
+    mod.create_walls(vp, walls_)
+    mod.create_leaves(vp, arc=True, side=1)
+    before = len(mod.plan_drawing(vp.scene, 1.2)["below"])
+    mod.update_rooms(vp)
+    groups = list(vp.scene.groups)
+    after = mod.plan_drawing(vp.scene, 1.2)
+    assert len(after["below"]) == before             # the slab did not cover the arc
+    assert vp.scene.groups == groups and len(after["rooms"]) == 1   # and nothing was left out

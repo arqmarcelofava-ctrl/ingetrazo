@@ -20,6 +20,16 @@ Um arquivo, `plugins/bim_proto.py`, mais testes (163 passando), imagens e docume
 | Comparação | Base × proposta (o que fica, o que sai, o que entra). |
 | Importar planta real | Do DWG: paredes, vãos de porta, portas, esquadrias — conferido contra o desenho a menos de 5 mm. |
 
+## Como aparece na tela
+
+Um painel novo, **«Projeto»**, na aba lateral (junto de Propriedades e Navegador), com **botões de ícone**
+agrupados: Desenhar (Parede), Aberturas (Unir cantos, Portas, Peitoris), Ambientes (Detectar, Áreas),
+Planta 2D (altura do corte, estilo, nomes dos ambientes) e Elementos (Atualizar 3D); embaixo, a árvore do
+projeto (pavimentos, paredes, portas, ambientes com área, vistas, pranchas). Há também o menu
+*Extensões ▸ BIM proto*. Os ícones são desenhados no mesmo estilo dos do programa. Importar DWG e Biblioteca
+de blocos aparecem apagados («Em breve»). Imagem: `docs/images/bim_proto_janela_painel.png`.
+O núcleo não deixa a extensão criar barra de ferramentas própria (só menu, painel e menu de contexto).
+
 ## O que ainda NÃO está pronto
 
 - **Nada disso foi visto na janela real do programa** (não há tela aqui): sombreado 3D, mouse, menus.
