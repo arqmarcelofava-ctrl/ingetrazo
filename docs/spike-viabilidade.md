@@ -384,8 +384,9 @@ Achados que valem para qualquer planta importada:
    explodir só o primeiro nível perde pilares e paredes do núcleo.
 3. **Duas plantas empilhadas no mesmo espaço-modelo** (base e proposta, 25 m
    uma da outra): é preciso escolher qual reconstruir.
-4. **O DWG não tem altura nem nível.** Todo Z é ~0; a altura (2,80 m) é
-   **suposição** e precisa vir do usuário. O modelo vira "um pavimento".
+4. **O DWG não tem altura nem nível.** Todo Z é ~0, então a altura tem de vir
+   do usuário. Adotados por ele, de forma provisória: pé-direito de **2,80 m** e
+   portas de **2,10 m**. O modelo vira "um pavimento".
 5. **O importador do núcleo ignora hachuras** — perde justamente o que o
    desenhista usou para marcar parede. Um BIM leve sobre DWG depende de ler
    essas hachuras (ou os polígonos dentro dos blocos), como o protótipo faz

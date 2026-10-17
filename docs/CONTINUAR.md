@@ -60,8 +60,10 @@ qualquer planta importada:
    pontos crus espelha a parede em X. (Foi um erro real.)
 4. O espaço-modelo pode ter **duas plantas empilhadas** (base e proposta);
    escolha qual reconstruir.
-5. O DWG **não tem alturas nem níveis** (Z ≈ 0). A altura (2,80 m) é
-   **suposição**: pergunte o pé-direito real ao usuário.
+5. O DWG **não tem alturas nem níveis** (Z ≈ 0). O usuário definiu, em
+   2026-10-17: **pé-direito 2,80 m "por enquanto"** (provisório) e **portas de
+   2,10 m** (valem para todas, inclusive as de shaft que o nome do bloco dá
+   como 1,96 m). Use esses valores; só mude se o usuário disser.
 6. Vãos de porta aparecem como **lacunas** entre trechos de parede alinhados.
    `wall_gaps` as acha e `merge_gap_walls` funde os trechos numa parede contínua
    com a abertura (`openings`); sem fundir, a verga é `create_walls(...,
@@ -107,7 +109,7 @@ onde o arquivo está. O que o `.glb` acrescenta ao DWG: mobília, acabamentos e 
 5. Compare com o que o DWG já deu (paredes e portas) e proponha, com honestidade,
    o que o `.glb` acrescenta e o que ele **não** traz (um `.glb` não tem camadas
    BIM nem níveis).
-6. Pergunte o **pé-direito real** e troque o 2,80 m assumido.
+6. Use o pé-direito de 2,80 m e as portas de 2,10 m (decisão do usuário, provisória); se ele trouxer a medida real, troque.
 7. Próximos passos de produto, se o usuário quiser: planta da base comparada
    com a proposta; esquadrias da fachada (montantes e painéis) e peitoris;
    resolver encontros de parede; tornar o painel «Project» interativo.
