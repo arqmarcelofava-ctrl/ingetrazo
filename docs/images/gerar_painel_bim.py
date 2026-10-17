@@ -49,4 +49,8 @@ p.end()
 out = root / "docs/images"
 img.save(str(out / "bim_proto_janela_painel.png"))
 panel.grab().save(str(out / "bim_proto_painel_botoes.png"))
+panel.wall_menu.popup(panel.buttons["wall"].mapToGlobal(panel.buttons["wall"].rect().bottomLeft()))
+app.processEvents()
+panel.wall_menu.grab().save(str(out / "bim_proto_menu_parede.png"))
+panel.wall_menu.hide()
 w._saved_version = vp.scene.version; w.close(); print("ok")

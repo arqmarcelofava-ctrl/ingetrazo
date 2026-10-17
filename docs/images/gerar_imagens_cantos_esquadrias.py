@@ -119,4 +119,18 @@ armario = bp.Mesh()
 bp._add_box(armario, (0, 0), (1, 0), (0, 1), 2.0, 3.2, 3.6, 4.0, 1.5, 2.2)      # armário alto
 vp.scene.groups.append(Group(armario, name="armário"))
 bp.render_plan(bp.plan_drawing(vp.scene, 1.2), width=1100, title="Planta a 1,20 m: corte, abaixo do corte e projeção (tracejado)").save(str(out / "bim_proto_planta_projecoes.png"))
+# --- paredes curvas, contínua e retângulo (as opções do botão Parede)
+set_language("pt-BR")
+vp = novo()
+bp.create_box_walls(vp, (0, 0), (7, 5), thickness=0.2)                       # retângulo: 4 paredes unidas
+bp.create_wall(vp, (7, 1.0), (7, 4.0), bulge=-1.4, thickness=0.2)             # curva: janela saliente (baía)
+bp.create_wall(vp, (2.5, 0), (2.5, 5), bulge=0.9, thickness=0.12)             # curva: divisória em arco
+bp.create_wall_chain(vp, [(9.5, 0), (13, 0), (13, 3), (11, 5)], thickness=0.2)  # contínua: 3 trechos unidos
+bp.create_wall_chain(vp, [(9.5, 6), (13, 6), (13, 9)], bulges=[0, 1.2], thickness=0.2)  # contínua com um trecho curvo
+img = desenhar(vp, yaw=-90, pitch=89.9, centro=(6.5, 4.5, 0), dist=40, corte=1.2, W=1100, H=800,
+               titulo="Parede reta, curva, contínua e retângulo: planta a 1,20 m")
+img.save(str(out / "bim_proto_paredes_curvas_planta.png"))
+img = desenhar(vp, yaw=-40, pitch=28, centro=(6.5, 4.5, 1.4), dist=40, W=1100, H=800,
+               titulo="As mesmas paredes em 3D (curvas são sólidos fechados)")
+img.save(str(out / "bim_proto_paredes_curvas_3d.png"))
 print("ok")

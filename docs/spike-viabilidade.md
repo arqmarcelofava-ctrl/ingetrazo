@@ -317,6 +317,7 @@ repositório.
 | Giro da porta | `door_swing(registros, parede, abertura)`: regra «a porta SEMPRE abre para a parede» — dobradiça no lado do canto, folha aberta a 90° rente à parede perpendicular (até 1 m do batente, com comprimento para receber a folha). Devolve dobradiça, lado, folga, e as `alternatives` (outras paredes que também recebem a folha); `ambiguous` quando a regra sozinha não decide. `create_leaves(auto_swing=True)` aplica; `overrides` manda por cima. |
 | Ambientes | `detect_rooms(registros)` acha os cômodos fechados pelas paredes e esquadrias (grade de 1 cm, contorno simplificado, pilares viram buracos, a região de fora e as menores que 1 m² não contam); `name_rooms` dá o nome por dicas (p.ex. bloco de cozinha); `create_rooms` cria uma **zona de piso** fechada (`IfcSpace`) por ambiente em 1 passo; `area_table` devolve a tabela de área útil (vírgula decimal); `render_plan(..., labels=True)` escreve nome e área. |
 | Importar DWG/DXF | `import_plan(viewport, caminho)` — botão **Importar DWG** do painel (diálogo: camadas de parede, planta, alturas). Abre o `.dwg` pelo conversor do núcleo (`formats.dwg_bridge`), lê os polígonos das camadas escolhidas (blocos aninhados e **espelhados** certos, hachuras, e qualquer bloco de nome «pilar»), separa **plantas empilhadas** (`split_plans`), liga as **portas** do desenho (`plan_doors`) ao vão mais próximo e faz paredes contínuas com abertura (ou verga). **Um passo de desfazer**; o deslocamento fica em `plugin_data["imports"]`. |
+| Tipos de parede | O botão **Parede** tem menu: **reta** (2 cliques ou comprimento digitado), **curva** (início, fim e um ponto do arco; `bulge` = flecha com sinal, até a meia-volta), **contínua** (vários cliques; duplo clique/Enter/Esc terminam; um passo de desfazer; cantos unidos) e **retângulo** (2 cantos = 4 paredes unidas). Espessura e altura em campos do painel. Funções: `create_wall(..., bulge=)`, `create_wall_chain`, `create_box_walls`, `arc_geometry`, `bulge_from_point`. |
 | Atualizar 3D | `update_3d(viewport, alvos=None)`: regenera paredes, esquadrias, peitoris, portas, blocos e ambientes (seleção, ou todas) de seus registros e dos níveis, **todas num único passo**. |
 | Editar + atualizar | `edit_walls(viewport, alvos, **parametros)`: 1 passo, desfaz parâmetros e geometria. |
 | Navegador | `add_outliner_kind` rotula a parede ("Parede", nível, espessura, altura). |
@@ -593,6 +594,26 @@ Achados que valem para qualquer planta importada:
     vão mais próximo (até 1,3 m) — portas sem vão na alvenaria não viram abertura;
     não importa esquadrias, peitoris, mobília nem ambientes (os outros botões fazem isso);
     camadas que o desenhista usa de outro jeito pedem escolha manual no diálogo.
+
+20. **Paredes curvas e outros jeitos de desenhar parede.** O botão só desenhava parede reta.
+    Agora a parede pode ser CURVA (`shape: "arc"` + `bulge`): o eixo é o arco que passa
+    pelos dois pontos com a flecha dada; o sólido é a faixa entre os raios R ± espessura/2,
+    extrudada (fechado, normais para fora, erro de corda < 2 mm e passo < 3°; volume =
+    comprimento do arco × espessura × altura, conferido a 0,2 %). O terceiro clique vira a
+    flecha (`bulge_from_point`; um ponto do outro lado do círculo dá mais de meia-volta e é
+    segurado na meia-volta; três pontos em linha dão parede reta). A **contínua** guarda os
+    pontos e cria tudo num passo ao terminar. **Limites:** a parede curva **não aceita
+    aberturas** (porta/janela) ainda; não entra em «Unir cantos» nem na regra de giro/vãos
+    (é ignorada de propósito); ela FECHA ambientes (aproximada por trechos de 2°); a
+    detecção de cantos oblíquos (fora de 90° ± 10°) segue sem unir. Falta também:
+    parede inclinada/de altura variável, arco por centro e raio digitados, e editar a
+    flecha arrastando.
+
+![Paredes: reta, curva, contínua, retângulo](images/bim_proto_paredes_curvas_planta.png)
+
+![As mesmas paredes em 3D](images/bim_proto_paredes_curvas_3d.png)
+
+![Menu do botão Parede](images/bim_proto_menu_parede.png)
 
 ### Peitoril e folha aberta (exemplo sintético)
 

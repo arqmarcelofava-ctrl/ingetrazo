@@ -8,7 +8,7 @@ Um arquivo, `plugins/bim_proto.py`, mais testes (163 passando), imagens e docume
 
 | Peça | O que faz |
 |---|---|
-| Parede | Desenhada por dois pontos, com espessura, altura e pavimento; os dados ficam no arquivo salvo e o 3D se refaz com **Atualizar 3D** (um único desfazer). |
+| Parede | O botão **Parede** tem menu: **reta, curva (3 pontos), contínua e retângulo**; espessura e altura em campos do painel; os dados ficam no arquivo salvo e o 3D se refaz com **Atualizar 3D** (um único desfazer). A curva ainda não aceita porta nem janela. |
 | Vãos | Portas e janelas são buracos de verdade na parede (porta = recorte até o chão, janela = furo). |
 | Cantos | **Unir cantos** resolve encontros em L e em T. |
 | Esquadrias | Montantes, painéis e travessas da fachada; guarda-corpo. |

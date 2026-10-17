@@ -1759,3 +1759,192 @@ def test_the_import_button_runs_the_dialog_result_and_survives_failure(win, tmp_
     assert ws and all(live.wall_record(g)["height"] in (2.5, 0.5) for g in ws)
     assert any(live.wall_record(g)["openings"] and live.wall_record(g)["openings"][0]["head"] == 2.0
                for g in ws)
+
+
+# ---- curved walls, continuous walls, rectangles; the tool's four modes -------------------
+
+import math as _math
+
+
+def _arc_rec(bulge=1.0, a=(0, 0), b=(4, 0), t=0.2, h=2.8):
+    return {"kind": "wall", "a": list(a), "b": list(b), "thickness": t, "height": h,
+            "level": "PB", "shape": "arc", "bulge": bulge}
+
+
+def test_the_arc_geometry_is_the_circle_through_the_ends_and_the_bulge():
+    g = mod.arc_geometry(_arc_rec(1.0))
+    assert g["radius"] == pytest.approx(2.5) and g["center"] == pytest.approx((2.0, -1.5))
+    assert g["length"] == pytest.approx(2.5 * 2 * _math.asin(0.8))
+    assert g["sweep"] < 0                                   # bulging left of a->b: clockwise
+    assert mod.arc_geometry(_arc_rec(-1.0))["center"] == pytest.approx((2.0, 1.5))
+    semi = mod.arc_geometry(_arc_rec(2.0))
+    assert semi["radius"] == pytest.approx(2.0) and semi["length"] == pytest.approx(_math.pi * 2.0)
+
+
+def test_a_curved_wall_is_a_closed_solid_of_the_right_size(vp):
+    g = mod.create_wall(vp, (0, 0), (4, 0), thickness=0.2, height=2.8, bulge=1.0)
+    rec = mod.wall_record(g)
+    assert rec["shape"] == "arc" and rec["bulge"] == 1.0
+    assert _volume(g) == pytest.approx(mod.arc_geometry(rec)["length"] * 0.2 * 2.8, rel=2e-3)
+    x0, y0, z0, x1, y1, z1 = _bbox(g)
+    assert (x0, x1) == pytest.approx((-0.0, 4.0), abs=0.11)         # ends are at a and b (± half thickness)
+    assert y1 == pytest.approx(1.1, abs=0.005)                       # crown: 1.0 + half thickness
+    assert y0 == pytest.approx(-0.1 + 0.0, abs=0.1)
+    assert (z0, z1) == pytest.approx((0.0, 2.8))
+
+
+def test_a_negative_bulge_curves_to_the_other_side_and_a_semicircle_works(vp):
+    up = mod.create_wall(vp, (0, 0), (4, 0), bulge=1.0)
+    down = mod.create_wall(vp, (0, 0), (4, 0), bulge=-1.0)
+    assert _bbox(up)[4] > 1.0 and _bbox(down)[1] < -1.0
+    semi = mod.create_wall(vp, (0, 0), (4, 0), bulge=2.0)
+    assert semi is not None and _volume(semi) is not None
+
+
+@pytest.mark.parametrize("bad", [
+    {"bulge": 0.0}, {"bulge": 2.5}, {"bulge": 1.0, "openings": [
+        {"s0": 1, "s1": 2, "sill": 0, "head": 2}]}, {"bulge": 1.0, "thickness": 6.0},
+    {"shape": "spiral", "bulge": 1.0}])
+def test_an_invalid_curved_wall_is_refused(bad):
+    rec = dict(_arc_rec(), **bad)
+    with pytest.raises(mod.BimProtoError):
+        mod.normalize_record(rec)
+
+
+def test_a_curved_wall_follows_update_edit_save_and_the_tree(vp, tmp_path):
+    g = mod.create_wall(vp, (0, 0), (4, 0), bulge=1.0)
+    good = _geom(g)
+    g.mesh = mod.Mesh()
+    assert mod.update_3d(vp) == 1 and _geom(g) == good
+    assert mod.edit_walls(vp, [g], bulge=1.5) == 1
+    assert _bbox(g)[4] > 1.55 and len(vp.history.undo_stack) == 3
+    vp.history.undo()
+    assert _geom(g) == good
+    igz.save_scene(vp.scene, tmp_path / "c.igz")
+    sc = Scene()
+    igz.load_into(sc, tmp_path / "c.igz")
+    (back,) = mod.walls(sc)
+    assert mod.wall_record(back)["bulge"] == 1.0 and _volume(back) == pytest.approx(_volume(g), rel=1e-6)
+    levels, _v, _s = mod.project_tree_model(vp.scene)
+    (pb,) = [lv for lv in levels[1] if lv[0].startswith("PB")]
+    assert pb[1][0][0].endswith("{:.2f} m".format(mod.arc_geometry(mod.wall_record(g))["length"]))
+
+
+def test_the_bulge_is_read_from_the_third_click():
+    assert mod.bulge_from_point((0, 0), (4, 0), (2, 1)) == pytest.approx(1.0)
+    assert mod.bulge_from_point((0, 0), (4, 0), (2, -1)) == pytest.approx(-1.0)
+    assert mod.bulge_from_point((0, 0), (4, 0), (1, 0)) == 0.0              # in line
+    # a point on the FAR side of the circle gives more than a half turn: held at the semicircle
+    assert mod.bulge_from_point((0, 0), (4, 0), (2, -4)) == pytest.approx(-2.0)
+    # a point on a known circle (centre (2, -1.5), R 2.5): the bulge comes back as 1.0
+    p = (2 + 2.5 * _math.cos(_math.radians(60)), -1.5 + 2.5 * _math.sin(_math.radians(60)))
+    sag = mod.bulge_from_point((0, 0), (4, 0), p)
+    assert sag == pytest.approx(1.0)
+
+
+def test_curved_walls_close_a_room_and_are_left_out_of_joins_and_gaps():
+    recs = [dict(_wall_rec((0, 0), (6, 0))), dict(_arc_rec(-2.0, (6, 0), (6, 4), 0.2), level="PB"),
+            dict(_wall_rec((6, 4), (0, 4))), dict(_wall_rec((0, 4), (0, 0)))]
+    (room,) = mod.detect_rooms(recs)
+    flat = (6 - 0.1) * (4 - 0.2)                                 # the room up to the chord x = 6
+    assert flat < room["area"] < flat + _math.pi * 2.0 ** 2 / 2  # the bay adds less than a half disc
+    assert room["area"] == pytest.approx(flat + _math.pi * 1.9 ** 2 / 2, rel=0.03)
+    new, joins = mod.join_walls(recs)
+    assert new[1]["a"] == [6, 0] and new[1]["b"] == [6, 4]       # the curve was not touched
+    assert mod.wall_gaps(recs) == []
+
+
+def test_a_chain_is_one_undo_step_with_joined_corners_and_can_curve(vp):
+    made = mod.create_wall_chain(vp, [(0, 0), (4, 0), (4, 3)], thickness=0.2)
+    assert len(made) == 2 and len(vp.history.undo_stack) == 1
+    a, b = (mod.wall_record(g) for g in made)
+    assert a["b"] == pytest.approx([4.1, 0.0]) and b["a"] == pytest.approx([4.0, 0.1])  # the L join
+    curved = mod.create_wall_chain(vp, [(10, 0), (14, 0), (14, 3)], bulges=[0, 0.8])
+    assert mod.wall_record(curved[1])["shape"] == "arc" and len(vp.history.undo_stack) == 2
+    with pytest.raises(mod.BimProtoError):
+        mod.wall_chain([(0, 0)])
+
+
+def test_a_box_is_four_walls_in_one_step_and_a_room(vp):
+    made = mod.create_box_walls(vp, (0, 0), (6, 4), thickness=0.2)
+    assert len(made) == 4 and len(vp.history.undo_stack) == 1
+    (room,) = mod.detect_rooms([mod.wall_record(g) for g in made])
+    assert room["area"] == pytest.approx((6 - 0.2) * (4 - 0.2), rel=0.005)
+    with pytest.raises(mod.BimProtoError):
+        mod.create_box_walls(vp, (0, 0), (6, 0))
+
+
+def test_the_arc_mode_takes_three_clicks_and_previews_the_arc(vp):
+    tool = mod.WallTool(app=None)
+    tool.set_mode("arc")
+    tool.on_click(_ctx(vp, 0, 0))
+    tool.on_click(_ctx(vp, 4, 0))
+    tool.on_hover(_ctx(vp, 2, 1))
+    lines = tool.rubber_band_lines()
+    assert len(lines) == 24 and lines[0][0] == V(0, 0, 0)            # the arc, in 24 pieces
+    assert vp.scene.groups == []
+    tool.on_click(_ctx(vp, 2, 1))
+    (g,) = vp.scene.groups
+    assert mod.wall_record(g)["shape"] == "arc" and mod.wall_record(g)["bulge"] == pytest.approx(1.0)
+    tool.on_click(_ctx(vp, 0, 5)); tool.on_click(_ctx(vp, 4, 5)); tool.on_click(_ctx(vp, 2, 5))
+    assert mod.wall_record(vp.scene.groups[1]).get("shape") is None   # three in line: straight
+
+
+def test_the_chain_mode_adds_points_and_finishes_with_double_click_enter_or_escape(vp):
+    tool = mod.WallTool(app=None)
+    tool.set_mode("chain")
+    for pt in ((0, 0), (4, 0), (4, 3)):
+        tool.on_click(_ctx(vp, *pt))
+    tool.on_hover(_ctx(vp, 0, 3))
+    assert len(tool.rubber_band_lines()) == 3                          # 2 walls + the elastic
+    assert vp.scene.groups == []
+    tool.on_double_click(_ctx(vp, 4, 3))
+    assert len(vp.scene.groups) == 2 and len(vp.history.undo_stack) == 1
+    from PySide6.QtCore import Qt
+    for finish in ("enter", "escape"):
+        tool.on_click(_ctx(vp, 10, 0)); tool.on_click(_ctx(vp, 12, 0)); tool.on_click(_ctx(vp, 12, 2))
+        if finish == "enter":
+            assert tool.on_key(vp, Qt.Key_Return, 0) is True
+        else:
+            tool.on_cancel(vp)
+    assert len(vp.scene.groups) == 6 and len(vp.history.undo_stack) == 3
+
+
+def test_a_one_point_chain_that_is_escaped_makes_nothing(vp):
+    tool = mod.WallTool(app=None)
+    tool.set_mode("chain")
+    tool.on_click(_ctx(vp, 0, 0))
+    tool.on_cancel(vp)
+    assert vp.scene.groups == []
+
+
+def test_the_rectangle_mode_makes_four_joined_walls(vp):
+    tool = mod.WallTool(app=None)
+    tool.set_mode("rect")
+    tool.thickness = 0.2
+    tool.on_click(_ctx(vp, 0, 0))
+    tool.on_hover(_ctx(vp, 6, 4))
+    assert len(tool.rubber_band_lines()) == 4
+    tool.on_click(_ctx(vp, 6, 4))
+    assert len(vp.scene.groups) == 4 and len(vp.history.undo_stack) == 1
+    tool.on_click(_ctx(vp, 0, 0)); tool.on_click(_ctx(vp, 6, 0))       # zero height: nothing
+    assert len(vp.scene.groups) == 4
+
+
+def test_a_bad_mode_is_refused():
+    with pytest.raises(ValueError):
+        mod.WallTool(app=None).set_mode("spiral")
+
+
+def test_the_wall_button_has_a_menu_of_modes_and_the_size_fields_drive_the_tool(win):
+    live = _live()
+    panel = _panel(win)
+    assert list(panel.mode_actions) == ["line", "arc", "chain", "rect"]
+    names = [a.text() for a in panel.wall_menu.actions()]
+    assert names == ["Straight wall", "Curved wall", "Continuous wall", "Rectangle"]
+    panel.mode_actions["arc"].trigger()
+    assert panel.tool.mode == "arc" and panel.buttons["wall"].text() == "Curved wall"
+    panel.thick.setValue(0.3); panel.hgt.setValue(3.1)
+    assert (panel.tool.thickness, panel.tool.height) == (0.3, 3.1)
+    panel.mode_actions["line"].trigger()
+    assert panel.buttons["wall"].text() == "Wall"

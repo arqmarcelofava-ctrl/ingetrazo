@@ -30,7 +30,7 @@ import math
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QVector3D
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
-                               QGridLayout, QLabel, QMessageBox, QTextEdit,
+                               QGridLayout, QLabel, QMenu, QMessageBox, QTextEdit,
                                QToolButton, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
 
@@ -84,7 +84,15 @@ _TEXTS = {
         "Block": "Bloco", "Room": "Ambiente",
         "Draw": "Desenhar", "Openings": "Aberturas", "Rooms": "Ambientes",
         "Plan 2D": "Planta 2D", "Elements": "Elementos",
-        "Doors": "Portas", "Swing": "Giro", "Detect rooms": "Detectar",
+        "Doors": "Portas",
+        "Click the next point; double-click or Enter to finish":
+        "Clique no próximo ponto; duplo clique ou Enter termina",
+        "Click the opposite corner": "Clique no canto oposto",
+        "Click the arc's end point": "Clique no ponto final do arco",
+        "Click a point the arc passes through": "Clique num ponto por onde o arco passa",
+        "Straight wall": "Parede reta", "Curved wall": "Parede curva",
+        "Continuous wall": "Parede contínua", "Rectangle": "Retângulo",
+        "Thickness (m)": "Espessura (m)", "Height (m)": "Altura (m)", "Swing": "Giro", "Detect rooms": "Detectar",
         "Area table": "Áreas", "Generate plan…": "Gerar planta…",
         "Import DWG": "Importar DWG", "Block library": "Biblioteca",
         "Soon": "Em breve", "Plan to import": "Planta a importar",
@@ -180,9 +188,102 @@ def normalize_record(rec: dict) -> dict:
     length = math.hypot(b[0] - a[0], b[1] - a[1])
     if length <= _EPS:
         raise BimProtoError("the wall has no length")
+    shape = str(rec.get("shape", "line"))
+    if shape not in ("line", "arc"):
+        raise BimProtoError("shape must be 'line' or 'arc'")
+    if shape == "arc":
+        try:
+            bulge = float(rec["bulge"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise BimProtoError(f"bad wall record: {exc}") from exc
+        if not math.isfinite(bulge) or abs(bulge) <= 1e-4:
+            raise BimProtoError("a curved wall needs a bulge (sagitta) of at least 0.1 mm")
+        if abs(bulge) > length / 2.0 + 1e-6:
+            raise BimProtoError("the bulge cannot pass half the chord (a semicircle)")
+        if rec.get("openings"):
+            raise BimProtoError("curved walls cannot have openings yet")
+        out["shape"], out["bulge"] = "arc", bulge
+        radius = arc_geometry(out)["radius"]
+        if radius <= out["thickness"] / 2.0 + _EPS:
+            raise BimProtoError("the radius is smaller than half the thickness")
+        out["openings"] = []
+        return out
     out["openings"] = _normalize_openings(rec.get("openings"), length,
                                           out["height"])
     return out
+
+
+def arc_geometry(rec: dict) -> dict:
+    """Geometria do eixo de uma parede CURVA (``bulge`` = flecha, em m, com sinal:
+    positiva para a ESQUERDA de ``a``→``b``): centro, raio, ângulo inicial, varredura
+    com sinal e comprimento do arco. Vai até uma meia-volta (flecha = metade da corda)."""
+    (ax, ay), (bx, by) = rec["a"], rec["b"]
+    chord = math.hypot(bx - ax, by - ay)
+    u = ((bx - ax) / chord, (by - ay) / chord)
+    n = (-u[1], u[0])
+    sag = rec["bulge"]
+    radius = (chord * chord / 4.0 + sag * sag) / (2.0 * abs(sag))
+    k = sag - math.copysign(radius, sag)
+    cx = (ax + bx) / 2.0 + n[0] * k
+    cy = (ay + by) / 2.0 + n[1] * k
+    theta = 2.0 * math.asin(min(1.0, chord / (2.0 * radius)))
+    return {"center": (cx, cy), "radius": radius,
+            "start": math.atan2(ay - cy, ax - cx),
+            "sweep": -theta if sag > 0 else theta, "length": radius * theta}
+
+
+def arc_points(rec: dict, offset: float = 0.0, n: int | None = None) -> list:
+    """Pontos (x, y) do eixo curvo, afastado ``offset`` m do eixo (+ para fora do
+    centro); ``n`` segmentos, ou os que mantêm o erro da corda abaixo de 2 mm e o
+    passo abaixo de 3°."""
+    g = arc_geometry(rec)
+    r = g["radius"] + offset
+    if n is None:
+        step = min(math.radians(3.0), 2.0 * math.acos(max(-1.0, 1.0 - 0.002 / max(r, 0.01))))
+        n = max(4, int(math.ceil(abs(g["sweep"]) / step)))
+    cx, cy = g["center"]
+    return [(cx + r * math.cos(g["start"] + g["sweep"] * i / n),
+             cy + r * math.sin(g["start"] + g["sweep"] * i / n)) for i in range(n + 1)]
+
+
+def bulge_from_point(a, b, p) -> float:
+    """A flecha (com sinal) da parede curva de ``a`` a ``b`` que passa por ``p`` —
+    o terceiro clique. 0 se os três estão em linha; limitada a meia volta."""
+    ax, ay = a
+    bx, by = b
+    px, py = p
+    chord = math.hypot(bx - ax, by - ay)
+    cross = (bx - ax) * (py - ay) - (by - ay) * (px - ax)
+    den = 2.0 * ((ax * (by - py)) + (bx * (py - ay)) + (px * (ay - by)))
+    if chord <= _EPS or abs(cross) <= 1e-9 or abs(den) <= 1e-12:
+        return 0.0
+    ux = ((ax * ax + ay * ay) * (by - py) + (bx * bx + by * by) * (py - ay)
+          + (px * px + py * py) * (ay - by)) / den
+    uy = ((ax * ax + ay * ay) * (px - bx) + (bx * bx + by * by) * (ax - px)
+          + (px * px + py * py) * (bx - ax)) / den
+    radius = math.hypot(ax - ux, ay - uy)
+    mid = ((ax + bx) / 2.0, (ay + by) / 2.0)
+    d = math.hypot(ux - mid[0], uy - mid[1])
+    nx, ny = -(by - ay) / chord, (bx - ax) / chord
+    side = 1.0 if cross > 0 else -1.0                      # p à esquerda ou à direita
+    centre_on_p_side = (ux - mid[0]) * nx * side + (uy - mid[1]) * ny * side > 0
+    sag = radius + d if centre_on_p_side else radius - d
+    return side * min(sag, chord / 2.0)
+
+
+def _arc_wall_mesh(rec: dict, base_z: float) -> Mesh:
+    """Parede curva: a faixa entre os raios R ± espessura/2, extrudada; fechada, com
+    normais para fora (o arco vira muitos quadriláteros)."""
+    half = rec["thickness"] / 2.0
+    n = None
+    outer = arc_points(rec, +half, n)
+    inner = arc_points(rec, -half, len(outer) - 1)
+    ring = outer + inner[::-1]
+    if _ring_area(ring) < 0:
+        ring.reverse()
+    mesh = Mesh()
+    _add_prism(mesh, ring, base_z, base_z + rec["height"])
+    return mesh
 
 
 def _normalize_openings(raw, length: float, height: float) -> list:
@@ -221,6 +322,8 @@ def wall_mesh(rec: dict, base_z: float) -> Mesh:
     """Prisma fechado da parede: planta retangular (eixo a→b, centrada,
     ``thickness``) extrudada de ``base_z`` a ``base_z + height``; todas as
     normais para fora. Coordenadas de mundo (Z para cima)."""
+    if rec.get("shape") == "arc":
+        return _arc_wall_mesh(rec, base_z)
     ax, ay = rec["a"]
     bx, by = rec["b"]
     dx, dy = bx - ax, by - ay
@@ -825,6 +928,14 @@ def _footprints(records):
     cobre o vão)."""
     out = []
     for r in records:
+        if r.get("shape") == "arc" and r.get("kind", "wall") == "wall":
+            pts = arc_points(r, 0.0, max(8, int(abs(arc_geometry(r)["sweep"]) / math.radians(2.0)) + 1))
+            for p, q in zip(pts, pts[1:]):
+                ln = math.hypot(q[0] - p[0], q[1] - p[1])
+                if ln > _EPS:
+                    out.append((p[0], p[1], (q[0] - p[0]) / ln, (q[1] - p[1]) / ln, ln,
+                                r["thickness"]))
+            continue
         if r.get("kind", "wall") == "frame":
             thick = r["depth"]
         elif r.get("kind", "wall") == "wall":
@@ -1154,6 +1265,8 @@ def door_swing(records, wall_index: int, opening_index: int, *, width=None,
     ``ambiguous`` é verdadeiro quando alguma está a menos de ``ambiguity`` (m) da
     melhor: nesse caso a regra sozinha não decide. ``side`` +1 é a esquerda do eixo ``a``→``b`` da parede."""
     w = records[wall_index]
+    if w.get("shape") == "arc":
+        return None
     o = w["openings"][opening_index]
     (ax, ay), (bx, by) = w["a"], w["b"]
     length = math.hypot(bx - ax, by - ay)
@@ -1163,7 +1276,7 @@ def door_swing(records, wall_index: int, opening_index: int, *, width=None,
     sin_min = math.cos(math.radians(perpendicular))   # |sin| mínimo de 90° ± folga
     found = []
     for j, v in enumerate(records):
-        if j == wall_index or v.get("level") != w.get("level"):
+        if j == wall_index or v.get("shape") == "arc" or v.get("level") != w.get("level"):
             continue
         va, vb = v["a"], v["b"]
         lv = math.hypot(vb[0] - va[0], vb[1] - va[1])
@@ -1490,11 +1603,13 @@ def join_walls(records, tol: float = 0.3, skew: float = 10.0):
     cands = []
     sin_min = math.cos(math.radians(skew))   # |sin| mínimo p/ 90° ± skew
     for i, A in enumerate(recs):
+        if A.get("shape") == "arc":
+            continue                      # parede curva não se une por canto reto
         for end_a in (0, 1):
             p = A["a"] if end_a == 0 else A["b"]
             ua = geo[i][1] if end_a == 1 else (-geo[i][1][0], -geo[i][1][1])
             for j, B in enumerate(recs):
-                if j == i or B.get("level") != A.get("level") \
+                if j == i or B.get("shape") == "arc" or B.get("level") != A.get("level") \
                         or abs(B.get("base_offset", 0.0)
                                - A.get("base_offset", 0.0)) > 1e-6:
                     continue
@@ -1976,10 +2091,11 @@ def _flash(viewport, text: str, msec: int = 4000) -> None:
 
 
 def create_wall(viewport, a, b, *, thickness=None, height=None,
-                level="PB", base_offset=0.0):
+                level="PB", base_offset=0.0, bulge=None):
     """Cria uma parede de ``a`` a ``b`` (x, y em metros) — um passo de
-    desfazer. Devolve o grupo, ou ``None`` se falhou (a razão vai à barra
-    de estado e ao ``history.last_error``)."""
+    desfazer. Com ``bulge`` (flecha, m, + à esquerda de a→b) a parede é CURVA.
+    Devolve o grupo, ou ``None`` se falhou (a razão vai à barra de estado e ao
+    ``history.last_error``)."""
     made = []
 
     def mutate(scene):
@@ -1988,6 +2104,8 @@ def create_wall(viewport, a, b, *, thickness=None, height=None,
                else thickness,
                "height": DEFAULTS["height"] if height is None else height,
                "level": level, "base_offset": base_offset}
+        if bulge:
+            rec.update(shape="arc", bulge=bulge)
         data = project_data(scene)          # garante PB também no arquivo
         scene.plugin_data[KEY] = data
         g = build_wall_group(scene, rec)
@@ -1995,6 +2113,48 @@ def create_wall(viewport, a, b, *, thickness=None, height=None,
         made.append(g)
 
     return made[0] if _run(viewport, mutate) and made else None
+
+
+def wall_chain(points, *, closed: bool = False, bulges=None, thickness=None,
+               height=None, level="PB", join: bool = True) -> list:
+    """Os registros de uma sequência de paredes pelos ``points`` (x, y): a parede
+    ``i`` vai do ponto ``i`` ao ``i+1`` (e do último ao primeiro se ``closed``).
+    ``bulges`` (uma flecha por parede, ``None``/0 = reta) faz trechos CURVOS.
+    ``join`` resolve os cantos entre trechos retos (:func:`join_walls`)."""
+    pts = [tuple(float(v) for v in p)[:2] for p in points]
+    count = len(pts) if closed else len(pts) - 1
+    if count < 1:
+        raise BimProtoError("a wall chain needs at least two points")
+    recs = []
+    for i in range(count):
+        a, b = pts[i], pts[(i + 1) % len(pts)]
+        rec = {"kind": "wall", "a": list(a), "b": list(b), "level": level,
+               "thickness": DEFAULTS["thickness"] if thickness is None else thickness,
+               "height": DEFAULTS["height"] if height is None else height}
+        if bulges and i < len(bulges) and bulges[i]:
+            rec.update(shape="arc", bulge=bulges[i])
+        recs.append(rec)
+    return join_walls(recs)[0] if join else recs
+
+
+def create_wall_chain(viewport, points, *, closed: bool = False, bulges=None,
+                      thickness=None, height=None, level="PB", join: bool = True) -> list:
+    """Cria a sequência de paredes de :func:`wall_chain` num ÚNICO passo de desfazer
+    (uma parede contínua, curva ou não). Devolve os grupos, ou ``[]`` se falhou."""
+    recs = wall_chain(points, closed=closed, bulges=bulges, thickness=thickness,
+                      height=height, level=level, join=join)
+    return create_walls(viewport, recs, height=DEFAULTS["height"] if height is None else height,
+                        level=level)
+
+
+def create_box_walls(viewport, p0, p1, *, thickness=None, height=None, level="PB") -> list:
+    """Quatro paredes fechando o retângulo de cantos opostos ``p0`` e ``p1`` (pelo
+    EIXO), com os cantos unidos — um passo de desfazer."""
+    (x0, y0), (x1, y1) = (p0[0], p0[1]), (p1[0], p1[1])
+    if abs(x1 - x0) <= _EPS or abs(y1 - y0) <= _EPS:
+        raise BimProtoError("the rectangle has no area")
+    return create_wall_chain(viewport, [(x0, y0), (x1, y0), (x1, y1), (x0, y1)], closed=True,
+                             thickness=thickness, height=height, level=level)
 
 
 def wall_from_rectangle(points, min_fill: float = 0.97) -> dict:
@@ -2051,6 +2211,7 @@ def wall_gaps(records, min_gap: float = 0.45, max_gap: float = 2.7,
     (verga) ou por baixo (peitoril): ``create_walls`` com ``base_offset`` e
     ``height`` — um vão ainda não é um furo paramétrico na parede."""
     recs = [(r["a"], r["b"], r["thickness"]) for r in records]
+    curved = [r.get("shape") == "arc" for r in records]     # paredes curvas não fazem vão reto
 
     def frame(a, b):
         dx, dy = b[0] - a[0], b[1] - a[1]
@@ -2071,9 +2232,11 @@ def wall_gaps(records, min_gap: float = 0.45, max_gap: float = 2.7,
     gaps = []
     for i, (ai, bi, thi) in enumerate(recs):
         ux, uy, li = frame(ai, bi)
-        if li < min_piece:
+        if li < min_piece or curved[i]:
             continue
         for j in range(i + 1, len(recs)):
+            if curved[j]:
+                continue
             aj, bj, thj = recs[j]
             vx, vy, lj = frame(aj, bj)
             if lj < min_piece or abs(ux * vy - uy * vx) > parallel_tol:
@@ -2202,7 +2365,8 @@ def create_walls(viewport, records, *, height=None, level="PB",
                 "thickness": rec["thickness"],
                 "height": DEFAULTS["height"] if height is None else height,
                 "level": level, "base_offset": base_offset,
-                "openings": rec.get("openings", [])})
+                "openings": rec.get("openings", []),
+                **{k: rec[k] for k in ("shape", "bulge") if k in rec}})
             scene.groups.append(g)
             made.append(g)
 
@@ -2240,7 +2404,7 @@ def edit_walls(viewport, targets, **changes) -> int:
     desfazer — desfazer devolve parâmetros e geometria juntos. Devolve
     quantas paredes mudaram."""
     allowed = {"thickness", "height", "level", "base_offset", "a", "b",
-               "openings"}
+               "openings", "shape", "bulge"}
     unknown = set(changes) - allowed
     if unknown:
         raise TypeError(f"unknown wall parameter(s): {sorted(unknown)}")
@@ -2285,12 +2449,21 @@ def update_3d(viewport, targets=None) -> int:
 # Ferramenta: parede por dois pontos
 # ---------------------------------------------------------------------------
 
+#: Os jeitos de desenhar parede: reta (2 cliques), curva (3 cliques), contínua
+#: (vários cliques; duplo clique, Enter ou Esc terminam) e retângulo (2 cantos).
+WALL_MODES = ("line", "arc", "chain", "rect")
+
+
 class WallTool(AxisMagnet, Tool):
-    """Dois cliques (ou clique + comprimento digitado) e a parede existe.
+    """Desenha paredes em quatro jeitos (``mode``): **reta** (dois cliques, ou clique e
+    comprimento digitado no VCB), **curva** (início, fim e um ponto do arco),
+    **contínua** (cada clique continua do anterior; duplo clique, Enter ou Esc
+    terminam, e a sequência inteira é UM passo de desfazer) e **retângulo** (dois
+    cantos opostos: quatro paredes com os cantos unidos).
 
     O ímã de eixo (``AxisMagnet``) e as inferências do motor de snap vêm do
     núcleo: ``ctx.world`` já chega encaixado. A espessura, a altura e o nível
-    de base são atributos da ferramenta (um painel os ligaria a campos).
+    de base são atributos da ferramenta (o painel os liga a campos).
 
     Não é achada pelo carregador (exige ``app``), então a extensão a monta no
     ``setup`` e a ativa com ``viewport.set_active_tool`` — uma ferramenta
@@ -2306,62 +2479,166 @@ class WallTool(AxisMagnet, Tool):
         self.thickness = DEFAULTS["thickness"]
         self.height = DEFAULTS["height"]
         self.level = "PB"
+        self.mode = "line"
         self.start_point: QVector3D | None = None
         self.hover_point: QVector3D | None = None
+        self.points: list = []              # contínua: pontos já clicados
+        self.arc_end: QVector3D | None = None   # curva: o segundo ponto
+
+    def set_mode(self, mode: str) -> None:
+        if mode not in WALL_MODES:
+            raise ValueError(f"unknown wall mode {mode!r}")
+        self.mode = mode
+        self._reset()
+
+    def _reset(self) -> None:
+        self.start_point = self.hover_point = self.arc_end = None
+        self.points = []
 
     # ---- ciclo de vida
     def on_activate(self, viewport) -> None:
-        self.start_point = self.hover_point = None
+        self._reset()
         viewport.flash_status(_t("Click the wall's first point"), 4000)
 
     def on_deactivate(self, viewport) -> None:
-        self.start_point = self.hover_point = None
+        self._reset()
 
     def on_cancel(self, viewport) -> None:
-        self.start_point = self.hover_point = None
+        if self.mode == "chain" and len(self.points) >= 2:
+            self._finish_chain(viewport)       # Esc termina a sequência (como Enter)
+            return
+        self._reset()
         viewport.update()
+
+    def on_double_click(self, ctx: ToolContext) -> None:
+        if self.mode == "chain":
+            self._finish_chain(ctx.viewport)
+
+    def on_key(self, viewport, key, modifiers) -> bool:
+        if self.mode == "chain" and key in (Qt.Key_Return, Qt.Key_Enter):
+            self._finish_chain(viewport)
+            return True
+        return False
 
     # ---- entrada espacial
     def on_click(self, ctx: ToolContext) -> None:
         vp = ctx.viewport
-        if self.start_point is None:
-            self.start_point = QVector3D(ctx.world)
-            vp.flash_status(_t("Click the wall's second point, or type its "
-                               "length"), 4000)
+        pt = QVector3D(ctx.world)
+        if self.mode == "chain":
+            if self.points and math.hypot(pt.x() - self.points[-1].x(),
+                                          pt.y() - self.points[-1].y()) <= _EPS:
+                return
+            self.points.append(pt)
+            self.start_point = pt
+            vp.flash_status(_t("Click the next point; double-click or Enter to finish"), 4000)
             return
-        self._commit(vp, self.start_point, QVector3D(ctx.world))
+        if self.start_point is None:
+            self.start_point = pt
+            vp.flash_status(_t("Click the wall's second point, or type its "
+                               "length") if self.mode == "line" else
+                            _t("Click the opposite corner") if self.mode == "rect" else
+                            _t("Click the arc's end point"), 4000)
+            return
+        if self.mode == "arc":
+            if self.arc_end is None:
+                self.arc_end = pt
+                vp.flash_status(_t("Click a point the arc passes through"), 4000)
+                return
+            self._commit_arc(vp, self.start_point, self.arc_end, pt)
+            return
+        if self.mode == "rect":
+            self._commit_rect(vp, self.start_point, pt)
+            return
+        self._commit(vp, self.start_point, pt)
 
     def on_hover(self, ctx: ToolContext) -> None:
         self.hover_point = QVector3D(ctx.world)
         ctx.viewport.update()
 
     def on_value(self, viewport, value) -> bool:
-        """Comprimento digitado (VCB), ao longo da direção do elástico."""
-        if self.start_point is None or isinstance(value, tuple):
+        """Comprimento digitado (VCB), ao longo da direção do elástico (reta e
+        contínua)."""
+        if self.mode not in ("line", "chain") or isinstance(value, tuple):
             return False
-        if self.hover_point is None or abs(value) < _EPS:
+        if self.start_point is None or self.hover_point is None or abs(value) < _EPS:
             return False
         delta = self.hover_point - self.start_point
         delta.setZ(0.0)
         if delta.length() < _EPS:
             return False
         end = self.start_point + delta.normalized() * value
+        if self.mode == "chain":
+            self.points.append(end)
+            self.start_point = end
+            return True
         return self._commit(viewport, self.start_point, end)
 
     def rubber_band_lines(self):
-        if self.start_point is None or self.hover_point is None:
+        h = self.hover_point
+        if self.mode == "chain":
+            pts = list(self.points)
+            lines = list(zip(pts, pts[1:]))
+            if pts and h is not None:
+                lines.append((pts[-1], h))
+            return lines
+        if self.start_point is None or h is None:
             return []
-        return [(self.start_point, self.hover_point)]
+        if self.mode == "rect":
+            a, c = self.start_point, h
+            b, d = QVector3D(c.x(), a.y(), a.z()), QVector3D(a.x(), c.y(), a.z())
+            return [(a, b), (b, c), (c, d), (d, a)]
+        if self.mode == "arc":
+            if self.arc_end is None:
+                return [(self.start_point, h)]
+            a, b = self.start_point, self.arc_end
+            sag = bulge_from_point((a.x(), a.y()), (b.x(), b.y()), (h.x(), h.y()))
+            if abs(sag) <= 1e-4:
+                return [(a, b)]
+            pts = arc_points({"a": [a.x(), a.y()], "b": [b.x(), b.y()], "bulge": sag,
+                              "thickness": 0.0}, 0.0, 24)
+            z = a.z()
+            return [(QVector3D(p[0], p[1], z), QVector3D(q[0], q[1], z))
+                    for p, q in zip(pts, pts[1:])]
+        return [(self.start_point, h)]
 
+    # ---- criação
     def _commit(self, viewport, a: QVector3D, b: QVector3D) -> bool:
         if math.hypot(b.x() - a.x(), b.y() - a.y()) <= _EPS:
             return False
         g = create_wall(viewport, (a.x(), a.y()), (b.x(), b.y()),
                         thickness=self.thickness, height=self.height,
                         level=self.level)
-        self.start_point = self.hover_point = None
+        self._reset()
         return g is not None
 
+    def _commit_arc(self, viewport, a, b, p) -> bool:
+        sag = bulge_from_point((a.x(), a.y()), (b.x(), b.y()), (p.x(), p.y()))
+        self._reset()
+        if abs(sag) <= 1e-4:                      # três pontos em linha: parede reta
+            return create_wall(viewport, (a.x(), a.y()), (b.x(), b.y()),
+                               thickness=self.thickness, height=self.height,
+                               level=self.level) is not None
+        return create_wall(viewport, (a.x(), a.y()), (b.x(), b.y()), bulge=sag,
+                           thickness=self.thickness, height=self.height,
+                           level=self.level) is not None
+
+    def _commit_rect(self, viewport, a, c) -> bool:
+        self._reset()
+        try:
+            return bool(create_box_walls(viewport, (a.x(), a.y()), (c.x(), c.y()),
+                                         thickness=self.thickness, height=self.height,
+                                         level=self.level))
+        except BimProtoError as exc:
+            _flash(viewport, str(exc))
+            return False
+
+    def _finish_chain(self, viewport) -> bool:
+        pts = [(p.x(), p.y()) for p in self.points]
+        self._reset()
+        if len(pts) < 2:
+            return False
+        return bool(create_wall_chain(viewport, pts, thickness=self.thickness,
+                                      height=self.height, level=self.level))
 
 
 # ---------------------------------------------------------------------------
@@ -2391,6 +2668,8 @@ def project_tree_model(scene) -> list:
 
 
 def _len(rec) -> float:
+    if rec.get("shape") == "arc":
+        return arc_geometry(rec)["length"]
     return math.hypot(rec["b"][0] - rec["a"][0], rec["b"][1] - rec["a"][1])
 
 
@@ -2736,6 +3015,20 @@ def bim_icon(key: str):
     if key == "wall":
         wall(6, 42, 24)
         accent(); p.drawPoint(QPointF(6, 24)); p.drawPoint(QPointF(42, 24))
+    elif key == "wall_arc":
+        p.setPen(QPen(ink, 7.0, Qt.SolidLine, Qt.FlatCap))
+        p.drawArc(QRectF(7, 14, 34, 34), 20 * 16, 140 * 16)
+        accent(); p.drawPoint(QPointF(12, 37)); p.drawPoint(QPointF(36, 37))
+    elif key == "wall_chain":
+        p.setPen(QPen(ink, 6.0, Qt.SolidLine, Qt.FlatCap, Qt.MiterJoin))
+        p.drawPolyline(QPolygonF([QPointF(6, 34), QPointF(18, 14), QPointF(30, 34), QPointF(42, 14)]))
+        accent(4.0)
+        for x, y in ((6, 34), (18, 14), (30, 34), (42, 14)):
+            p.drawPoint(QPointF(x, y))
+    elif key == "wall_rect":
+        p.setPen(QPen(ink, 6.0, Qt.SolidLine, Qt.FlatCap, Qt.MiterJoin))
+        p.drawRect(QRectF(9, 12, 30, 24))
+        accent(4.0); p.drawPoint(QPointF(9, 12)); p.drawPoint(QPointF(39, 36))
     elif key == "door":
         wall(6, 16, 36); wall(32, 42, 36)
         p.drawLine(QPointF(16, 36), QPointF(16, 10))
@@ -2870,9 +3163,10 @@ class BimPanel(QWidget):
     show_text = staticmethod(lambda title, text: QMessageBox.information(None, title, text))
     ask_import = staticmethod(ask_import_options)
 
-    def __init__(self, app, start_wall) -> None:
+    def __init__(self, app, start_wall, tool=None) -> None:
         super().__init__()
         self.app = app
+        self.tool = tool
         self.setObjectName("bim_proto_panel")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(6, 6, 6, 6)
@@ -2910,10 +3204,56 @@ class BimPanel(QWidget):
             lay.addLayout(grid)
 
         vp = lambda: app.viewport
+        wall_btn = button("wall", _t("Wall"), _t("Draw a wall from two points, with thickness, height and base level."), start_wall)
+        self.wall_menu = None
+        if tool is not None:
+            from PySide6.QtGui import QActionGroup
+            self.wall_menu = QMenu(wall_btn)
+            group = QActionGroup(self.wall_menu)
+            self.mode_actions = {}
+            icons = {"line": "wall", "arc": "wall_arc", "chain": "wall_chain", "rect": "wall_rect"}
+            names = {"line": _t("Straight wall"), "arc": _t("Curved wall"),
+                     "chain": _t("Continuous wall"), "rect": _t("Rectangle")}
+
+            def pick(mode):
+                tool.set_mode(mode)
+                wall_btn.setIcon(bim_icon(icons[mode]))
+                wall_btn.setText(names[mode] if mode != "line" else _t("Wall"))
+                start_wall()
+
+            for mode in WALL_MODES:
+                act = self.wall_menu.addAction(bim_icon(icons[mode]), names[mode])
+                act.setCheckable(True)
+                act.setChecked(mode == tool.mode)
+                group.addAction(act)
+                act.triggered.connect(lambda _=False, m=mode: pick(m))
+                self.mode_actions[mode] = act
+            wall_btn.setMenu(self.wall_menu)
+            wall_btn.setPopupMode(QToolButton.MenuButtonPopup)
         section(_t("Draw"), [
-            button("wall", _t("Wall"), _t("Draw a wall from two points, with thickness, height and base level."), start_wall),
+            wall_btn,
             button("import", _t("Import DWG"), _t("Import DWG"), self.import_dwg),
             button("blocks", _t("Block library"), _t("Block library"), None, enabled=False)])
+        if tool is not None:
+            dims = QGridLayout()
+            self.thick = QDoubleSpinBox()
+            self.thick.setRange(0.02, 2.0)
+            self.thick.setSingleStep(0.01)
+            self.thick.setDecimals(3)
+            self.thick.setValue(tool.thickness)
+            self.thick.setSuffix(" m")
+            self.hgt = QDoubleSpinBox()
+            self.hgt.setRange(0.1, 20.0)
+            self.hgt.setSingleStep(0.05)
+            self.hgt.setValue(tool.height)
+            self.hgt.setSuffix(" m")
+            self.thick.valueChanged.connect(lambda v: setattr(tool, "thickness", v))
+            self.hgt.valueChanged.connect(lambda v: setattr(tool, "height", v))
+            dims.addWidget(QLabel(_t("Thickness (m)")), 0, 0)
+            dims.addWidget(self.thick, 0, 1)
+            dims.addWidget(QLabel(_t("Height (m)")), 1, 0)
+            dims.addWidget(self.hgt, 1, 1)
+            lay.addLayout(dims)
         section(_t("Openings"), [
             button("join", _t("Join corners"), _t("Join corners"), lambda: join_corners(vp())),
             button("door", _t("Doors"), _t("Door leaves"), lambda: create_leaves(
@@ -3017,7 +3357,7 @@ def setup(app) -> None:
         sub.addAction(_t("Door leaves"), lambda: create_leaves(app.viewport))
     app.add_outliner_kind(_outliner_kind)
 
-    panel = BimPanel(app, start_wall)
+    panel = BimPanel(app, start_wall, tool)
 
     def refresh_tree():
         fill_tree(panel.tree, project_tree_model(app.scene))
