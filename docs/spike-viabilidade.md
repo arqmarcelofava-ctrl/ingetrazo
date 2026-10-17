@@ -395,6 +395,26 @@ Achados que valem para qualquer planta importada:
 7. Portas e vidros existem no DWG como blocos em camadas próprias; **vãos não
    foram reconstruídos** — é o próximo passo natural (face com furo).
 
+### Inspecionar um modelo grande (`scripts/inspecionar_modelo.py`)
+
+Abre `.igz`, `.glb`, `.skp`, `.dae`, `.obj`, `.stl`, `.dxf` ou `.dwg` pelos
+**mesmos importadores do aplicativo**, imprime o que veio (faces, grupos,
+camadas, cenas, caixa em metros, aviso se a unidade não parece metro) e desenha
+planta cortada, frente e axonometria pelo passe `core.hlr` — sem OpenGL. Serve
+para um modelo de centenas de MB num computador sem placa de vídeo.
+
+```
+QT_QPA_PLATFORM=offscreen python scripts/inspecionar_modelo.py modelos/apartamento.glb
+python scripts/inspecionar_modelo.py modelos/x.skp --corte 1.2 --saida modelos/saida
+python scripts/inspecionar_modelo.py modelos/x.glb --so-relatorio     # só o relatório
+```
+
+As imagens vão para `modelos/saida/` e a pasta `modelos/` está no `.gitignore`
+(dado de cliente não entra no Git). Acima de 60 mil faces o desenho pede
+`--forcar`, porque o passe de linhas exato é lento. Testado com `.igz`, `.glb`
+(ida e volta de um exemplo do repositório) e `.dwg`; **não** testado com
+`.skp`, `.dae`, `.obj`, `.stl` nem com um modelo de centenas de MB.
+
 ### Limites conhecidos do protótipo (de propósito)
 
 Só parede. Sem vão, sem zona de piso, sem ambientes, sem planta/corte/prancha geradas pela
