@@ -307,7 +307,9 @@ repositório.
 | Geometria | derivada: prisma fechado (6 faces, normais para fora), `z = z(nível) + base_offset`. Volume = comprimento × espessura × altura (teste). Etiqueta `IfcWall` via `core.bim.tag_group`. |
 | Vãos | `wall_gaps(registros)` acha as lacunas de porta; `merge_gap_walls` as funde numa parede contínua com `openings` (porta = entalhe, janela = furo). Sem fundir, a verga é `create_walls(..., base_offset=altura_da_porta)`. |
 | Importar planta | `wall_from_rectangle(pontos)` (retângulo em qualquer orientação → eixo + espessura) e `create_walls(viewport, registros)`: lote em **1 passo** de desfazer. |
-| Atualizar 3D | `update_3d(viewport, alvos=None)`: regenera paredes (seleção, ou todas) de seus registros e dos níveis, **todas num único passo**. |
+| Cantos | `join_walls(registros, tol=0.3)` (função pura) resolve encontros em **L** e em **T** de paredes desenhadas por eixo, sem sobrepor nem deixar fresta (exato a 90°); `join_corners(viewport)` aplica em **1 passo** de desfazer (menu «Unir cantos»). |
+| Esquadrias | `kind: "frame"` em `group.ext`: eixo, `depth`, `height`, `divisions` (centros dos montantes), `mullion`, `panel` (`glass`/`mesh`/`none`), `panel_thickness`, `ifc` (`IfcWindow` ou `IfcRailing`). Sólidos fechados e separados num grupo; `create_frames` em 1 passo; Atualizar 3D também as refaz. |
+| Atualizar 3D | `update_3d(viewport, alvos=None)`: regenera paredes e esquadrias (seleção, ou todas) de seus registros e dos níveis, **todas num único passo**. |
 | Editar + atualizar | `edit_walls(viewport, alvos, **parametros)`: 1 passo, desfaz parâmetros e geometria. |
 | Navegador | `add_outliner_kind` rotula a parede ("Parede", nível, espessura, altura). |
 
@@ -391,9 +393,12 @@ Achados que valem para qualquer planta importada:
    desenhista usou para marcar parede. Um BIM leve sobre DWG depende de ler
    essas hachuras (ou os polígonos dentro dos blocos), como o protótipo faz
    fora do importador.
-6. **Falta resolver encontros.** As peças do DWG já vêm cortadas nos encontros
-   (por isso fecham), mas o protótipo continua sem resolver T/L entre paredes
-   desenhadas por eixo (achado das imagens acima).
+6. **Encontros de parede.** As peças do DWG já vêm cortadas nos encontros (por
+   isso fecham). Para paredes desenhadas por eixo, `join_walls`/`join_corners`
+   resolvem L e T (ver «Cantos» abaixo). **Não aplicar a uma planta importada**:
+   no DWG de teste, com a tolerância padrão (0,30 m) a união mexeu em 77 dos 134
+   encontros e tirou 0,26 m² de parede que já estava certa; com 0,05 m mexeu em 14
+   e a área quase não muda (+0,013 m²).
 7. **Vãos de porta, reconstruídos como lacunas.** Uma planta desenha a porta
    fazendo a parede parar e recomeçar. `wall_from_rectangle` + `wall_gaps`
    acham essas lacunas (trechos paralelos, eixos alinhados, folga de 0,45 a
@@ -415,12 +420,48 @@ Achados que valem para qualquer planta importada:
    Na planta de teste: 12 portas ligadas → 8 aberturas em 125 paredes contínuas,
    todas sólidos fechados, 1 passo de desfazer; 3 vãos entre trechos de espessuras
    diferentes (12 e 25 cm) não fundiram e ficaram com verga.
-9. Ainda **não** reconstruídos: esquadrias de fachada (montantes e painéis),
-   peitoris de janela, guarda-corpos, folhas de porta, e o encontro de paredes.
+9. **Esquadrias da fachada e guarda-corpos.** O DWG tem 22 blocos na camada de vidro
+   (montantes 50×50 mm, painéis de chapa expandida) e 3 guarda-corpos de vidro de
+   4 a 5 cm. O protótipo os reconstrói como grupos `kind: "frame"`: 4 sistemas
+   (2 de chapa expandida, 2 de vidro) com 11 montantes e 3 guarda-corpos, todos
+   sólidos fechados, 1 passo de desfazer, guardados no `.igz` e refeitos por
+   Atualizar 3D. As esquadrias preenchem lacunas da alvenaria na fachada.
+   **Alturas são suposição minha, não dado do projeto:** 2,80 m para os sistemas
+   e 1,10 m para o guarda-corpo (o DWG não tem Z). Os trilhos horizontais
+   (travessas), a soleira de pedra, o peitoril e as folhas de porta **não** foram
+   modelados; o painel dos dois sistemas de vidro é inferido da camada, não de um
+   bloco de painel. Uma falha real achada aqui: um montante que encosta na ponta
+   do sistema deixava um painel-fiapo (largura ~0) que quebrava o sólido; painéis
+   com menos de 1 mm não são criados.
+10. **Base × proposta** (análise, não código do repositório). As duas plantas
+    estão exatamente 25,00 m uma da outra (41 trechos coincidem a 1 cm). Sobrepostas:
+    base 28,75 m² de parede, proposta 30,92 m², **mantida 27,13 m²**, a demolir
+    1,62 m², nova 3,80 m² (103 peças da proposta mantidas, 15 novas, 16 parciais;
+    8 da base a demolir). Só a camada de alvenaria; diferenças de poucos
+    centímetros em peças de fachada aparecem como parcial. Feita com `shapely` em
+    scripts de apoio (não é dependência do projeto e não foi adicionada).
+
+### Cantos: antes e depois (exemplo sintético)
+
+![Cantos antes e depois](images/bim_proto_cantos_antes_depois.png)
+
+### Esquadrias e guarda-corpo (exemplo sintético)
+
+![Esquadrias](images/bim_proto_esquadrias.png)
+
+Geradas por `docs/images/gerar_imagens_cantos_esquadrias.py`. A regra do canto em L:
+a parede **mais longa** avança até a face de fora da outra, e a outra recua até a
+face de dentro da primeira; no T, a ponta recua até a face da parede que atravessa.
+Duas armadilhas reais que os testes pegaram: a união precisa ser **idempotente**
+(rodar de novo não pode mexer; havia um erro de sinal que fazia as paredes
+derivarem 0,2 m por rodada) e uma peça curta **não pode sumir** (a ponta de trás de
+uma peça de 20 cm se unia ao que estava atrás dela; agora a ponta só passa do
+cruzamento até metade do próprio comprimento, e peça que ficaria com menos de 2 cm
+não é tocada).
 
 ### Limites conhecidos do protótipo (de propósito)
 
-Só parede. Sem vão, sem zona de piso, sem ambientes, sem planta/corte/prancha geradas pela
+Parede, vão, canto e esquadria (sem travessas, peitoris nem folhas de porta). Sem zona de piso, sem ambientes, sem planta/corte/prancha geradas pela
 extensão (o painel só lista). Mover/girar não atualiza o registro (ver P5).
 `plugins/bim_proto.py` entra no empacotamento (`ingetrazo.spec:60`,
 `'plugins/*.py'`) e carrega em toda execução do aplicativo — **antes de mesclar,

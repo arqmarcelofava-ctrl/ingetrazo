@@ -46,6 +46,11 @@ DEFAULTS = {"thickness": 0.15, "height": 2.8}
 DEFAULT_LEVELS = [{"id": "PB", "name": "PB", "z": 0.0}]
 
 _EPS = 1e-9
+#: Comprimento mínimo (m) que uma parede ainda tem depois de unir cantos.
+_MIN_JOIN_LENGTH = 0.02
+#: Menor largura (m) de painel entre dois montantes; abaixo disso é fresta de
+#: arredondamento (um montante que encosta na ponta) e não vira painel.
+_MIN_PANEL = 1e-3
 
 _TEXTS = {
     "pt-BR": {
@@ -65,6 +70,10 @@ _TEXTS = {
         "Não há paredes do BIM proto no documento.",
         "Levels": "Pavimentos", "Views": "Vistas", "Sheets": "Pranchas",
         "Project": "Projeto",
+        "Join corners": "Unir cantos",
+        "Frame": "Esquadria", "Railing": "Guarda-corpo",
+        "{n} wall(s) joined": "{n} parede(s) unida(s)",
+        "No wall corners to join.": "Não há cantos de parede para unir.",
         "Close the group you are editing, then run this again.":
         "Feche o grupo que está editando e repita.",
     },
@@ -296,12 +305,13 @@ def build_wall_group(scene, rec: dict, name: str | None = None) -> Group:
     return g
 
 
-def _next_name(scene) -> str:
-    n = sum(1 for g in scene.groups if wall_record(g) is not None) + 1
+def _next_name(scene, what: str = "Wall") -> str:
+    own = frame_record if what != "Wall" else wall_record
+    n = sum(1 for g in scene.groups if own(g) is not None) + 1
     taken = {g.name for g in scene.groups}
-    while f"{_t('Wall')} {n}" in taken:
+    while f"{_t(what)} {n}" in taken:
         n += 1
-    return f"{_t('Wall')} {n}"
+    return f"{_t(what)} {n}"
 
 
 def regenerate_wall(scene, group) -> None:
@@ -324,6 +334,307 @@ def regenerate_wall(scene, group) -> None:
 
 def walls(scene) -> list:
     return [g for g in scene.groups if wall_record(g) is not None]
+
+
+# ---------------------------------------------------------------------------
+# Esquadrias: montantes + painéis (fachada)
+# ---------------------------------------------------------------------------
+
+#: Valores iniciais da esquadria (metros).
+FRAME_DEFAULTS = {"depth": 0.06, "mullion": 0.05, "panel": "glass",
+                  "panel_thickness": 0.01, "ifc": "IfcWindow"}
+
+
+def frame_record(group):
+    """O registro de esquadria de ``group`` (``group.ext[KEY]``) ou ``None``."""
+    ext = getattr(group, "ext", None)
+    rec = ext.get(KEY) if isinstance(ext, dict) else None
+    if isinstance(rec, dict) and rec.get("kind") == "frame":
+        return rec
+    return None
+
+
+def normalize_frame(rec: dict) -> dict:
+    """Valida e limpa o registro de uma esquadria; levanta :class:`BimProtoError`.
+
+    Eixo ``a``→``b`` (x, y em metros), ``depth`` (espessura do montante),
+    ``height``, ``level``/``base_offset`` como na parede. ``divisions`` são as
+    posições (s, ao longo do eixo; 0 = ``a``) dos CENTROS dos montantes, de
+    largura ``mullion``; entre dois montantes vai um painel (``panel``:
+    ``"glass"``, ``"mesh"`` ou ``"none"``) de espessura ``panel_thickness``,
+    centrado na profundidade. ``ifc`` é a classe IFC do grupo."""
+    try:
+        out = {
+            "kind": "frame",
+            "a": [float(v) for v in rec["a"]][:2],
+            "b": [float(v) for v in rec["b"]][:2],
+            "depth": float(rec.get("depth", FRAME_DEFAULTS["depth"])),
+            "height": float(rec["height"]),
+            "level": str(rec["level"]),
+            "base_offset": float(rec.get("base_offset", 0.0)),
+            "mullion": float(rec.get("mullion", FRAME_DEFAULTS["mullion"])),
+            "panel": str(rec.get("panel", FRAME_DEFAULTS["panel"])),
+            "panel_thickness": float(rec.get(
+                "panel_thickness", FRAME_DEFAULTS["panel_thickness"])),
+            "ifc": str(rec.get("ifc", FRAME_DEFAULTS["ifc"])),
+            "divisions": sorted(float(v) for v in rec.get("divisions") or []),
+        }
+    except (KeyError, TypeError, ValueError) as exc:
+        raise BimProtoError(f"bad frame record: {exc}") from exc
+    a, b = out["a"], out["b"]
+    if len(a) != 2 or len(b) != 2:
+        raise BimProtoError("a and b need two coordinates")
+    nums = a + b + [out["depth"], out["height"], out["base_offset"],
+                    out["mullion"], out["panel_thickness"]] + out["divisions"]
+    if not all(math.isfinite(v) for v in nums):
+        raise BimProtoError("non-finite value in the frame record")
+    if out["depth"] <= _EPS or out["height"] <= _EPS \
+            or out["mullion"] <= _EPS or out["panel_thickness"] <= _EPS:
+        raise BimProtoError("depth, height, mullion and panel thickness "
+                            "must be positive")
+    if out["panel"] not in ("glass", "mesh", "none"):
+        raise BimProtoError("panel must be 'glass', 'mesh' or 'none'")
+    if out["panel_thickness"] > out["depth"] + _EPS:
+        raise BimProtoError("the panel cannot be thicker than the frame")
+    if out["ifc"] not in bim.IFC_CLASSES:
+        raise BimProtoError(f"unknown IFC class {out['ifc']!r}")
+    length = math.hypot(b[0] - a[0], b[1] - a[1])
+    if length <= _EPS:
+        raise BimProtoError("the frame has no length")
+    half = out["mullion"] / 2.0
+    prev_end = 0.0
+    for c in out["divisions"]:
+        if c < half - _EPS or c > length - half + _EPS:
+            raise BimProtoError("a mullion must lie inside the frame's length")
+        if c - half < prev_end - _EPS:
+            raise BimProtoError("mullions overlap")
+        prev_end = c + half
+    return out
+
+
+def _add_box(mesh, origin, u, n, s0, s1, t0, t1, z0, z1) -> None:
+    """Prisma fechado: ``s`` ao longo de ``u``, ``t`` ao longo de ``n`` (esquerda
+    de ``u``), de ``z0`` a ``z1``; todas as normais para fora."""
+    foot = [(s0, t0), (s1, t0), (s1, t1), (s0, t1)]           # anti-horário
+    pts = [(origin[0] + u[0] * s + n[0] * t, origin[1] + u[1] * s + n[1] * t)
+           for s, t in foot]
+    low = [QVector3D(x, y, z0) for x, y in pts]
+    top = [QVector3D(x, y, z1) for x, y in pts]
+    mesh.add_face(list(reversed(low)))
+    mesh.add_face(top)
+    for i in range(4):
+        j = (i + 1) % 4
+        mesh.add_face([low[i], low[j], top[j], top[i]])
+
+
+def frame_mesh(rec: dict, base_z: float) -> Mesh:
+    """Montantes (prismas ``mullion`` x ``depth``) nas ``divisions`` e, entre
+    eles, painéis finos de ``panel_thickness``; tudo de ``base_z`` a
+    ``base_z + height``. Cada peça é um sólido fechado e separado (os painéis
+    não invadem os montantes), todos num só grupo."""
+    ax, ay = rec["a"]
+    bx, by = rec["b"]
+    length = math.hypot(bx - ax, by - ay)
+    u = ((bx - ax) / length, (by - ay) / length)
+    n = (-u[1], u[0])
+    z0, z1 = base_z, base_z + rec["height"]
+    d2, m2 = rec["depth"] / 2.0, rec["mullion"] / 2.0
+    p2 = rec["panel_thickness"] / 2.0
+    mesh = Mesh()
+    cursor = 0.0
+    cells = []
+    for c in rec["divisions"]:
+        _add_box(mesh, (ax, ay), u, n, c - m2, c + m2, -d2, d2, z0, z1)
+        cells.append((cursor, c - m2))
+        cursor = c + m2
+    cells.append((cursor, length))
+    if rec["panel"] != "none":
+        for s0, s1 in cells:
+            if s1 - s0 > _MIN_PANEL:
+                _add_box(mesh, (ax, ay), u, n, s0, s1, -p2, p2, z0, z1)
+    return mesh
+
+
+def build_frame_group(scene, rec: dict, name: str | None = None) -> Group:
+    """Um grupo novo (ainda fora de ``scene.groups``) com a esquadria de ``rec``."""
+    rec = normalize_frame(rec)
+    base_z = level_z(scene, rec["level"]) + rec["base_offset"]
+    g = Group(frame_mesh(rec, base_z),
+              name=name or _next_name(scene, "Railing" if rec["ifc"]
+                                      == "IfcRailing" else "Frame"))
+    bim.tag_group(g, rec["ifc"], g.name)
+    g.ext = {KEY: rec}
+    return g
+
+
+def regenerate_frame(scene, group) -> None:
+    """Como :func:`regenerate_wall`, para uma esquadria."""
+    rec = frame_record(group)
+    if rec is None:
+        raise BimProtoError(f"«{group.name}» is not a BIM proto frame")
+    rec = normalize_frame(rec)
+    base_z = level_z(scene, rec["level"]) + rec["base_offset"]
+    group.mesh = frame_mesh(rec, base_z)     # FRAGILE: mesmo motivo de regenerate_wall
+    group.xform = None
+    group.children = []
+    group.ext = dict(group.ext or {}, **{KEY: rec})
+
+
+def frames(scene) -> list:
+    return [g for g in scene.groups if frame_record(g) is not None]
+
+
+# ---------------------------------------------------------------------------
+# Encontros de parede (cantos em L e em T)
+# ---------------------------------------------------------------------------
+
+def join_walls(records, tol: float = 0.3, skew: float = 10.0):
+    """Resolve os ENCONTROS entre paredes desenhadas pelo eixo, sem sobrepor
+    nem deixar fresta (exato para encontros a 90°; ``skew`` é o desvio, em
+    graus, que ainda se aceita como 90°). Devolve ``(registros, encontros)``:
+    cópias dos registros com ``a``/``b`` ajustados (as aberturas acompanham) e
+    a lista ``[{"kind": "L"|"T", "walls": (i, j)}]``.
+
+    * Canto em L (as duas pontas perto do cruzamento dos eixos, até ``tol``):
+      a parede MAIS LONGA avança até a face de fora da outra; a outra recua até
+      a face de dentro da primeira.
+    * T (a ponta de uma encosta no meio da outra): a ponta recua até a face.
+
+    Só se unem paredes do mesmo nível e da mesma ``base_offset``. Nada além de
+    ``a`` e ``b`` muda. Uma peça que ficaria com menos de 2 cm (ou invertida)
+    não é tocada."""
+    recs = [copy.deepcopy(dict(r)) for r in records]
+    geo = []
+    for r in recs:
+        ax, ay = r["a"]
+        bx, by = r["b"]
+        length = math.hypot(bx - ax, by - ay)
+        geo.append((length, ((bx - ax) / length, (by - ay) / length)
+                    if length > _EPS else (1.0, 0.0)))
+
+    def cross(p, q):
+        return p[0] * q[1] - p[1] * q[0]
+
+    cands = []
+    sin_min = math.cos(math.radians(skew))   # |sin| mínimo p/ 90° ± skew
+    for i, A in enumerate(recs):
+        for end_a in (0, 1):
+            p = A["a"] if end_a == 0 else A["b"]
+            ua = geo[i][1] if end_a == 1 else (-geo[i][1][0], -geo[i][1][1])
+            for j, B in enumerate(recs):
+                if j == i or B.get("level") != A.get("level") \
+                        or abs(B.get("base_offset", 0.0)
+                               - A.get("base_offset", 0.0)) > 1e-6:
+                    continue
+                lb, vb = geo[j]
+                den = cross(ua, vb)
+                if abs(den) < sin_min:
+                    continue
+                q = B["a"]
+                qp = (q[0] - p[0], q[1] - p[1])
+                lam = cross(qp, vb) / den          # de p até X, ao longo de ua
+                mu = cross(qp, ua) / den           # de B.a até X, ao longo de vb
+                # a ponta pode ficar curta até ``tol`` ou passar do cruzamento
+                # até ``tol`` — mas nunca mais que metade da própria parede
+                # (senão a OUTRA ponta de uma peça curta se uniria a algo
+                # que está atrás dela)
+                if lam > tol or -lam > min(tol, geo[i][0] / 2.0) \
+                        or mu < -tol or mu > lb + tol:
+                    continue
+                kind = "L" if mu <= tol or mu >= lb - tol else "T"
+                end_b = 0 if mu <= tol else 1
+                cands.append((abs(lam), i, end_a, j, end_b, kind, ua, den, lam))
+    cands.sort(key=lambda c: (c[0], c[1], c[3]))
+
+    used, joins = set(), []
+    new_end: dict = {}
+
+    def point(i, end):
+        return recs[i]["a"] if end == 0 else recs[i]["b"]
+
+    for _dist, i, end_a, j, end_b, kind, ua, den, lam in cands:
+        if (i, end_a) in used or (kind == "L" and (j, end_b) in used):
+            continue
+        sin = abs(den)
+        p = point(i, end_a)
+        x = (p[0] + ua[0] * lam, p[1] + ua[1] * lam)   # X = p + ua * lam
+        tb = recs[j]["thickness"]
+        ta = recs[i]["thickness"]
+        if kind == "T":
+            back = tb / 2.0 / sin
+            new_end[(i, end_a)] = (x[0] - ua[0] * back, x[1] - ua[1] * back)
+            used.add((i, end_a))
+        else:
+            ub = geo[j][1] if end_b == 1 else (-geo[j][1][0], -geo[j][1][1])
+            win_i = (geo[i][0], -i) >= (geo[j][0], -j)
+            if win_i:
+                new_end[(i, end_a)] = (x[0] + ua[0] * (tb / 2.0 / sin),
+                                       x[1] + ua[1] * (tb / 2.0 / sin))
+                new_end[(j, end_b)] = (x[0] - ub[0] * (ta / 2.0 / sin),
+                                       x[1] - ub[1] * (ta / 2.0 / sin))
+            else:
+                new_end[(j, end_b)] = (x[0] + ub[0] * (ta / 2.0 / sin),
+                                       x[1] + ub[1] * (ta / 2.0 / sin))
+                new_end[(i, end_a)] = (x[0] - ua[0] * (tb / 2.0 / sin),
+                                       x[1] - ua[1] * (tb / 2.0 / sin))
+            used.update({(i, end_a), (j, end_b)})
+        joins.append({"kind": kind, "walls": (i, j)})
+
+    # Uma peça curta que o encontro faria sumir (ou virar do avesso) fica como
+    # estava: encurtar além do comprimento não é unir, é apagar.
+    def new_length(i):
+        a_ = new_end.get((i, 0), recs[i]["a"])
+        b_ = new_end.get((i, 1), recs[i]["b"])
+        u_ = geo[i][1]
+        return (b_[0] - a_[0]) * u_[0] + (b_[1] - a_[1]) * u_[1]
+
+    for i in {k[0] for k in new_end}:
+        if new_length(i) < _MIN_JOIN_LENGTH:
+            new_end.pop((i, 0), None)
+            new_end.pop((i, 1), None)
+            joins[:] = [j for j in joins if i not in j["walls"]]
+
+    for (i, end), (nx_, ny_) in new_end.items():
+        r = recs[i]
+        u = geo[i][1]
+        if end == 0:
+            delta = (nx_ - r["a"][0]) * u[0] + (ny_ - r["a"][1]) * u[1]
+            r["a"] = [nx_, ny_]
+            for o in r.get("openings") or []:
+                o["s0"] -= delta
+                o["s1"] -= delta
+        else:
+            r["b"] = [nx_, ny_]
+    return recs, joins
+
+
+def join_corners(viewport, targets=None, tol: float = 0.3) -> int:
+    """«Unir cantos»: aplica :func:`join_walls` às paredes (``targets``, ou
+    todas) e regenera o 3D — um único passo de desfazer; tudo ou nada.
+    Devolve quantas paredes mudaram (0 se nada precisava)."""
+    scene = viewport.scene
+    todo = [g for g in (targets if targets is not None else walls(scene))
+            if wall_record(g) is not None]
+    new, _joins = join_walls([wall_record(g) for g in todo], tol=tol)
+    def moved(p, q):
+        return math.hypot(p[0] - q[0], p[1] - q[1]) > 1e-6
+
+    changed = [(g, r) for g, r in zip(todo, new)
+               if moved(r["a"], wall_record(g)["a"])
+               or moved(r["b"], wall_record(g)["b"])]
+    if not changed:
+        _flash(viewport, _t("No wall corners to join."))
+        return 0
+
+    def mutate(sc):
+        for g, r in changed:
+            g.ext = dict(g.ext, **{KEY: r})
+            regenerate_wall(sc, g)
+
+    if not _run(viewport, mutate):
+        return 0
+    _flash(viewport, _t("{n} wall(s) joined", n=len(changed)))
+    return len(changed)
 
 
 # ---------------------------------------------------------------------------
@@ -639,6 +950,29 @@ def create_walls(viewport, records, *, height=None, level="PB",
     return made if _run(viewport, mutate) else []
 
 
+def create_frames(viewport, records, *, height=None, level="PB") -> list:
+    """Cria várias esquadrias num ÚNICO passo de desfazer (tudo ou nada).
+    ``records``: dicts com ``a``, ``b`` e, se quiser, ``depth``, ``divisions``,
+    ``mullion``, ``panel``, ``panel_thickness``, ``ifc``, ``height`` e
+    ``base_offset``. Devolve os grupos criados, ou ``[]`` se falhou."""
+    records = list(records)
+    made: list = []
+
+    def mutate(scene):
+        scene.plugin_data[KEY] = project_data(scene)
+        for rec in records:
+            g = build_frame_group(scene, dict(
+                rec, kind="frame", level=level,
+                height=rec.get("height", DEFAULTS["height"]
+                               if height is None else height)))
+            scene.groups.append(g)
+            made.append(g)
+
+    if not records:
+        return []
+    return made if _run(viewport, mutate) else []
+
+
 def edit_walls(viewport, targets, **changes) -> int:
     """Muda parâmetros (``thickness``, ``height``, ``level``, ``base_offset``,
     ``a``, ``b``, ``openings``) de ``targets`` E regenera o 3D, num único passo de
@@ -670,15 +1004,19 @@ def update_3d(viewport, targets=None) -> int:
         _flash(viewport, _t("Close the group you are editing, then run "
                             "this again."))
         return 0
-    todo = [g for g in (targets if targets is not None else walls(scene))
-            if wall_record(g) is not None]
+    todo = [g for g in (targets if targets is not None
+                        else walls(scene) + frames(scene))
+            if wall_record(g) is not None or frame_record(g) is not None]
     if not todo:
         _flash(viewport, _t("No BIM proto walls in the document."))
         return 0
 
     def mutate(sc):
         for g in todo:
-            regenerate_wall(sc, g)
+            if frame_record(g) is not None:
+                regenerate_frame(sc, g)
+            else:
+                regenerate_wall(sc, g)
 
     if not _run(viewport, mutate):
         return 0
@@ -778,11 +1116,13 @@ def project_tree_model(scene) -> list:
     ``[(rótulo, [(rótulo, [...]) ...]) ...]``."""
     data = project_data(scene)
     by_level: dict = {}
-    for g in walls(scene):
-        by_level.setdefault(wall_record(g).get("level"), []).append(g)
+    for g in walls(scene) + frames(scene):
+        rec = wall_record(g) or frame_record(g)
+        by_level.setdefault(rec.get("level"), []).append(g)
     levels = []
     for lv in sorted(data["levels"], key=lambda v: float(v.get("z", 0))):
-        kids = [(f"{g.name} — {_len(wall_record(g)):.2f} m", [])
+        kids = [(f"{g.name} — {_len(wall_record(g) or frame_record(g)):.2f} m",
+                 [])
                 for g in by_level.get(lv.get("id"), [])]
         levels.append((f"{lv.get('name', lv.get('id'))}  (+{float(lv['z']):.2f} m)",
                        kids))
@@ -831,6 +1171,7 @@ def setup(app) -> None:
     if sub is not None:
         sub.addAction(_t("Wall"), start_wall)
         sub.addAction(_t("Update 3D"), refresh)
+        sub.addAction(_t("Join corners"), lambda: join_corners(app.viewport))
     app.add_outliner_kind(_outliner_kind)
 
     tree = QTreeWidget()
@@ -845,6 +1186,13 @@ def setup(app) -> None:
 
 
 def _outliner_kind(group):
+    rec = frame_record(group)
+    if rec is not None:
+        return {"type": _t("Railing" if rec["ifc"] == "IfcRailing"
+                           else "Frame"), "props": [
+            ("Level", rec["level"]),
+            ("Mullions", str(len(rec["divisions"]))),
+            ("Height", f"{rec['height']:.2f} m")]}
     rec = wall_record(group)
     if rec is None:
         return None

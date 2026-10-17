@@ -391,7 +391,7 @@ def test_the_plugin_loads_and_adds_its_menu(win):
     assert "BIM proto" in titles
     sub = next(a.menu() for a in win._ext_menu.actions()
                if a.menu() and a.menu().title() == "BIM proto")
-    assert [a.text() for a in sub.actions()] == ["Wall", "Update 3D"]
+    assert [a.text() for a in sub.actions()] == ["Wall", "Update 3D", "Join corners"]
     # WallTool needs `app`, so the loader leaves it out of the one-shot entries
     assert not any(k.startswith("plugin_bim_proto_") for k in win._tools)
 
@@ -716,3 +716,238 @@ def test_overlapping_gaps_around_a_short_piece_become_one_opening():
     assert ops[0]["s0"] == pytest.approx(2.0) and ops[0]["s1"] == pytest.approx(3.3)
     assert ops[0]["head"] == 2.2                       # the taller one wins
     assert mod.create_walls(FakeViewport(), merged) != []   # and it builds
+
+
+# ---- corners: L and T joins ------------------------------------------------------
+
+def _footprint(rec):
+    """The wall's footprint as four (x, y) corners."""
+    (ax, ay), (bx, by), h = rec["a"], rec["b"], rec["thickness"] / 2
+    ln = ((bx - ax) ** 2 + (by - ay) ** 2) ** 0.5
+    nx, ny = -(by - ay) / ln, (bx - ax) / ln
+    return [(ax - nx * h, ay - ny * h), (bx - nx * h, by - ny * h),
+            (bx + nx * h, by + ny * h), (ax + nx * h, ay + ny * h)]
+
+
+def _cover(records, x0, y0, x1, y1, step=0.01):
+    """How many footprints cover each sample point, over a window."""
+    rects = [_footprint(r) for r in records]
+    counts = {}
+    nx, ny = int((x1 - x0) / step), int((y1 - y0) / step)
+    for i in range(nx):
+        for j in range(ny):
+            p = (x0 + (i + 0.5) * step, y0 + (j + 0.5) * step)
+            n = sum(mod._pip(p, rc) for rc in rects)
+            counts[n] = counts.get(n, 0) + 1
+    return counts
+
+
+def test_an_l_corner_is_filled_once_with_no_gap_and_no_overlap():
+    a = _w((0, 0), (3.9, 0), 0.2)       # the longer one wins the corner
+    b = _w((4, 0.05), (4, 3), 0.1)
+    new, joins = mod.join_walls([a, b])
+    assert [j["kind"] for j in joins] == ["L"]
+    # the exact L: A to the outside face of B, B from the inside face of A
+    assert new[0]["b"] == pytest.approx([4.05, 0.0])
+    assert new[1]["a"] == pytest.approx([4.0, 0.1])
+    c = _cover(new, 3.5, -0.3, 4.4, 0.6)
+    assert set(c) == {0, 1}              # never covered twice
+    # the corner square (outer corner at (4.05, -0.1)) is solid
+    assert mod._pip((4.04, -0.09), _footprint(new[0]))
+
+
+def test_four_walls_drawn_by_axis_make_a_clean_room():
+    t = 0.2
+    room = [_w((0, 0), (4, 0), t), _w((4, 0), (4, 3), t),
+            _w((4, 3), (0, 3), t), _w((0, 3), (0, 0), t)]
+    new, joins = mod.join_walls(room)
+    assert len(joins) == 4 and {j["kind"] for j in joins} == {"L"}
+    area = sum(mod._len(r) * r["thickness"] for r in new)
+    assert area == pytest.approx((4 + t) * (3 + t) - (4 - t) * (3 - t))
+    assert set(_cover(new, -0.3, -0.3, 4.3, 3.3, 0.02)) == {0, 1}
+
+
+def test_a_t_joint_stops_the_branch_at_the_face_of_the_through_wall():
+    through = _w((0, 0), (6, 0), 0.2)
+    branch = _w((3, 0.02), (3, 4), 0.1)      # ends a hair off the axis
+    new, joins = mod.join_walls([through, branch])
+    assert [j["kind"] for j in joins] == ["T"]
+    assert new[0]["a"] == [0, 0] and new[0]["b"] == [6, 0]   # untouched
+    assert new[1]["a"] == pytest.approx([3.0, 0.1])
+    assert set(_cover(new, 2.5, -0.3, 3.5, 0.6)) == {0, 1}
+
+
+def test_walls_that_do_not_meet_are_left_alone():
+    parallel = [_w((0, 0), (4, 0)), _w((0, 0.4), (4, 0.4))]
+    far = [_w((0, 0), (4, 0)), _w((4.6, 0), (4.6, 3))]       # 0.6 m away
+    for recs in (parallel, far):
+        new, joins = mod.join_walls(recs)
+        assert joins == [] and [r["a"] for r in new] == [r["a"] for r in recs]
+
+
+def test_only_walls_on_the_same_level_are_joined():
+    a = dict(_w((0, 0), (4, 0)), level="PB")
+    b = dict(_w((4, 0), (4, 3)), level="P1")
+    assert mod.join_walls([a, b])[1] == []
+
+
+def test_a_door_keeps_its_place_when_its_wall_end_moves():
+    a = dict(_w((0, 0), (4, 0), 0.2), openings=[
+        {"s0": 1.0, "s1": 1.9, "sill": 0.0, "head": 2.1}])
+    b = _w((0, 3), (0, 0.0), 0.1)             # meets A's start: A is the longer
+    new, _ = mod.join_walls([a, b])
+    shift = new[0]["a"][0] - 0.0              # A's start moved to x = -0.05
+    o = new[0]["openings"][0]
+    assert shift == pytest.approx(-0.05)
+    assert new[0]["a"][0] + o["s0"] == pytest.approx(1.0)    # same world place
+    assert new[0]["a"][0] + o["s1"] == pytest.approx(1.9)
+
+
+def test_join_corners_is_one_undo_step_and_the_volume_is_exact(vp):
+    t, h = 0.2, 2.8
+    recs = [_w((0, 0), (4, 0), t), _w((4, 0), (4, 3), t),
+            _w((4, 3), (0, 3), t), _w((0, 3), (0, 0), t)]
+    made = mod.create_walls(vp, recs, height=h)
+    before = [_geom(g) for g in made]
+    steps = len(vp.history.undo_stack)
+    assert mod.join_corners(vp) == 4
+    assert len(vp.history.undo_stack) == steps + 1
+    vol = sum(_volume(g) for g in made)
+    assert vol == pytest.approx(((4 + t) * (3 + t) - (4 - t) * (3 - t)) * h, rel=1e-4)
+    assert mod.join_corners(vp) == 0                         # nothing left to join
+    vp.history.undo()
+    assert [_geom(g) for g in made] == before                # one Ctrl+Z
+
+
+def test_joined_corners_survive_save_and_reopen(vp, tmp_path):
+    mod.create_walls(vp, [_w((0, 0), (4, 0), 0.2), _w((4, 0), (4, 3), 0.2)])
+    mod.join_corners(vp)
+    igz.save_scene(vp.scene, tmp_path / "c.igz")
+    sc = Scene()
+    igz.load_into(sc, tmp_path / "c.igz")
+    got = sorted(tuple(map(tuple, (mod.wall_record(g)["a"], mod.wall_record(g)["b"])))
+                 for g in mod.walls(sc))
+    want = sorted(tuple(map(tuple, (mod.wall_record(g)["a"], mod.wall_record(g)["b"])))
+                  for g in mod.walls(vp.scene))
+    assert got == want
+
+
+# ---- facade frames: mullions and panels ------------------------------------------
+
+def _frame(**kw):
+    rec = {"a": (0, 0), "b": (3, 0), "height": 2.8, "level": "PB",
+           "divisions": [0.025, 1.0, 2.0, 2.975], "mullion": 0.05}
+    rec.update(kw)
+    return rec
+
+
+def test_a_frame_is_closed_solids_with_the_expected_volume(vp):
+    (g,) = mod.create_frames(vp, [_frame()])
+    posts = 4 * 0.05 * 0.06 * 2.8
+    panels = (3 - 4 * 0.05) * 0.01 * 2.8
+    assert _volume(g) == pytest.approx(posts + panels, rel=1e-4)
+    assert g.ifc["class"] == "IfcWindow"
+    x0, y0, z0, x1, y1, z1 = _bbox(g)
+    assert (x0, x1) == pytest.approx((0, 3)) and (z0, z1) == pytest.approx((0, 2.8))
+
+
+def test_a_railing_is_a_single_glass_sheet(vp):
+    (g,) = mod.create_frames(vp, [{"a": (0, 0), "b": (1.5, 0), "height": 1.1,
+                                   "level": "PB", "depth": 0.04,
+                                   "panel_thickness": 0.04,
+                                   "ifc": "IfcRailing"}])
+    assert g.ifc["class"] == "IfcRailing"
+    assert _volume(g) == pytest.approx(1.5 * 0.04 * 1.1, rel=1e-4)
+    assert g.name.startswith("Railing")
+
+
+def test_a_frame_without_panels_is_only_mullions(vp):
+    (g,) = mod.create_frames(vp, [_frame(panel="none")])
+    assert _volume(g) == pytest.approx(4 * 0.05 * 0.06 * 2.8, rel=1e-4)
+
+
+@pytest.mark.parametrize("bad", [
+    {"divisions": [0.01]},                  # the mullion would stick out the end
+    {"divisions": [1.0, 1.02]},             # mullions overlap
+    {"panel": "wood"},
+    {"panel_thickness": 0.2},               # thicker than the frame
+    {"ifc": "IfcBanana"},
+    {"height": 0}, {"mullion": 0}, {"b": (0, 0)},
+])
+def test_an_invalid_frame_is_refused_and_nothing_changes(vp, bad):
+    assert mod.create_frames(vp, [_frame(**bad)]) == []
+    assert vp.scene.groups == [] and vp.history.last_error
+
+
+def test_frames_are_created_in_one_undo_step_and_update_3d_rebuilds_them(vp):
+    mod.create_frames(vp, [_frame(), _frame(a=(0, 5), b=(3, 5))])
+    assert len(vp.history.undo_stack) == 1
+    g = vp.scene.groups[0]
+    good = _geom(g)
+    g.mesh = mod.Mesh()                                       # break the geometry
+    assert mod.update_3d(vp) == 2
+    assert _geom(g) == good
+    assert len(vp.history.undo_stack) == 2                    # one step for both
+    vp.history.undo()
+    assert _geom(g) == []                                     # back to the broken one
+
+
+def test_frames_survive_save_and_reopen_with_their_parameters(vp, tmp_path):
+    mod.create_walls(vp, [_w((0, 0), (3, 0))])
+    mod.create_frames(vp, [_frame(a=(0, 1), b=(3, 1), panel="mesh")])
+    igz.save_scene(vp.scene, tmp_path / "f.igz")
+    sc = Scene()
+    igz.load_into(sc, tmp_path / "f.igz")
+    (fr,) = mod.frames(sc)
+    rec = mod.frame_record(fr)
+    assert rec["panel"] == "mesh" and rec["divisions"] == [0.025, 1.0, 2.0, 2.975]
+    assert fr.ifc["class"] == "IfcWindow"
+    assert _volume(fr) == pytest.approx(_volume(mod.frames(vp.scene)[0]))
+    assert len(mod.walls(sc)) == 1                  # walls and frames stay apart
+
+
+def test_the_tree_and_the_outliner_know_the_frames(vp):
+    mod.create_frames(vp, [_frame()])
+    levels, _views, _sheets = mod.project_tree_model(vp.scene)
+    (pb,) = [lv for lv in levels[1] if lv[0].startswith("PB")]
+    assert [label.split(" — ")[0] for label, _ in pb[1]] == ["Frame 1"]
+    info = mod._outliner_kind(vp.scene.groups[0])
+    assert info["type"] == "Frame" and ("Mullions", "4") in info["props"]
+
+
+def test_joining_is_the_same_whether_the_ends_fall_short_or_overshoot():
+    t = 0.2
+    short = [_w((0, 0), (3.9, 0), t), _w((4, 0.3), (4, 3), t)]
+    over = [_w((0, 0), (4.1, 0), t), _w((4, -0.1), (4, 3), t)]
+    a, _ = mod.join_walls(short)
+    b, _ = mod.join_walls(over)
+    twice, _ = mod.join_walls(b)
+    for x, y in zip(a, b):
+        assert x["a"] == pytest.approx(y["a"]) and x["b"] == pytest.approx(y["b"])
+    for x, y in zip(b, twice):                       # and joining again changes nothing
+        assert x["a"] == pytest.approx(y["a"]) and x["b"] == pytest.approx(y["b"])
+
+
+def test_a_stub_that_a_join_would_erase_is_left_alone():
+    # real plans have short pieces squeezed between two walls: joining must not
+    # shorten them to nothing (that crashed on the first real floor plan)
+    wall = _w((0, 0), (6, 0), 0.2)
+    stub = _w((3, 0.05), (3, 0.11), 0.1)             # 6 cm long, T onto the wall
+    new, _ = mod.join_walls([wall, stub])
+    assert new[1]["a"] == [3, 0.05] and new[1]["b"] == [3, 0.11]
+    mod.normalize_record(dict(new[1], level="PB", height=2.8))   # still valid
+
+
+def test_the_far_end_of_a_short_piece_does_not_join_what_is_behind_it():
+    wall = _w((0, 0), (6, 0), 0.2)
+    stub = _w((3, 0.05), (3, 0.25), 0.1)             # 0.2 m long
+    new, joins = mod.join_walls([wall, stub])
+    assert len(joins) == 1
+    assert new[1]["a"] == pytest.approx([3, 0.1]) and new[1]["b"] == [3, 0.25]
+
+
+def test_a_mullion_touching_the_end_leaves_no_sliver_panel(vp):
+    # real data: the post centre is 0.0250000001 from the end, not 0.025
+    (g,) = mod.create_frames(vp, [_frame(divisions=[0.0250000001, 1.0, 2.9749999])])
+    assert len(g.mesh.faces) == 6 * (3 + 2)           # 3 posts + the 2 real panels
+    assert _volume(g) is not None
