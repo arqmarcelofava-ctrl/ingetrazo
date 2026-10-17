@@ -77,7 +77,7 @@ _TEXTS = {
         "Join corners": "Unir cantos",
         "Sill": "Peitoril", "Door leaf": "Folha de porta",
         "Sills": "Peitoris (janelas)", "Door leaves": "Folhas de porta",
-        "Block": "Bloco",
+        "Block": "Bloco", "Room": "Ambiente",
         "cut": "corte", "below the cut": "abaixo do corte",
         "projection (above the cut)": "projeção (acima do corte)",
         "Frame": "Esquadria", "Railing": "Guarda-corpo",
@@ -316,7 +316,8 @@ def build_wall_group(scene, rec: dict, name: str | None = None) -> Group:
 
 def _next_name(scene, what: str = "Wall") -> str:
     kind = {"Wall": "wall", "Frame": "frame", "Railing": "frame",
-            "Sill": "sill", "Door leaf": "leaf", "Block": "block"}[what]
+            "Sill": "sill", "Door leaf": "leaf", "Block": "block",
+            "Room": "room"}[what]
     n = sum(1 for g in scene.groups
             if (element_record(g) or {}).get("kind") == kind) + 1
     taken = {g.name for g in scene.groups}
@@ -793,6 +794,325 @@ def leaf_mesh(rec: dict, base_z: float) -> Mesh:
 
 
 # ---------------------------------------------------------------------------
+# Ambientes (zonas de piso): detectados pelas paredes, com nome e área
+# ---------------------------------------------------------------------------
+
+def _footprints(records):
+    """Retângulos (centro do eixo, comprimento, espessura) das paredes e
+    esquadrias — o que fecha um ambiente (porta fechada: o retângulo da parede
+    cobre o vão)."""
+    out = []
+    for r in records:
+        if r.get("kind", "wall") == "frame":
+            thick = r["depth"]
+        elif r.get("kind", "wall") == "wall":
+            thick = r["thickness"]
+        else:
+            continue
+        (ax, ay), (bx, by) = r["a"], r["b"]
+        ln = math.hypot(bx - ax, by - ay)
+        if ln > _EPS:
+            out.append((ax, ay, (bx - ax) / ln, (by - ay) / ln, ln, thick))
+    return out
+
+
+def _chain_loops(free):
+    """Contornos (listas de vértices (i, j) na grade) da máscara ``free``
+    (2D de bool, índice [j, i]). A região livre fica à ESQUERDA: contorno externo
+    anti-horário, ilhas (buracos) horárias."""
+    import numpy as np
+    ny, nx = free.shape
+    pad = np.zeros((ny + 2, nx + 2), dtype=bool)
+    pad[1:-1, 1:-1] = free
+    edges: dict = {}
+
+    def add(a, b):
+        edges.setdefault(a, []).append(b)
+
+    below = pad[:-2, 1:-1]          # célula (j-1, i)
+    above = pad[2:, 1:-1]
+    left = pad[1:-1, :-2]
+    right = pad[1:-1, 2:]
+    for j, i in zip(*np.nonzero(free & ~below)):      # borda de baixo: da esquerda p/ direita
+        add((int(i), int(j)), (int(i) + 1, int(j)))
+    for j, i in zip(*np.nonzero(free & ~right)):      # borda da direita: de baixo p/ cima
+        add((int(i) + 1, int(j)), (int(i) + 1, int(j) + 1))
+    for j, i in zip(*np.nonzero(free & ~above)):      # borda de cima: da direita p/ esquerda
+        add((int(i) + 1, int(j) + 1), (int(i), int(j) + 1))
+    for j, i in zip(*np.nonzero(free & ~left)):       # borda da esquerda: de cima p/ baixo
+        add((int(i), int(j) + 1), (int(i), int(j)))
+    loops = []
+    while edges:
+        start = next(iter(edges))
+        loop, cur, prev_dir = [start], start, None
+        while True:
+            outs = edges[cur]
+            if len(outs) == 1 or prev_dir is None:
+                nxt = outs.pop(0)
+            else:                                   # vértice de sela: vira à esquerda
+                def turn(o):
+                    d = (o[0] - cur[0], o[1] - cur[1])
+                    return prev_dir[0] * d[1] - prev_dir[1] * d[0]
+                nxt = max(outs, key=turn)
+                outs.remove(nxt)
+            if not outs:
+                del edges[cur]
+            prev_dir = (nxt[0] - cur[0], nxt[1] - cur[1])
+            cur = nxt
+            if cur == start:
+                break
+            loop.append(cur)
+        loops.append(loop)
+    return loops
+
+
+def _simplify_ring(pts, tol):
+    """Douglas-Peucker num anel fechado (lista de (x, y))."""
+    if len(pts) <= 4:
+        return pts
+    def dist(p, a, b):
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        ln = math.hypot(dx, dy)
+        if ln < 1e-12:
+            return math.hypot(p[0] - a[0], p[1] - a[1])
+        return abs((p[0] - a[0]) * dy - (p[1] - a[1]) * dx) / ln
+
+    def rdp(seq):
+        a, b = seq[0], seq[-1]
+        idx, dmax = 0, 0.0
+        for k in range(1, len(seq) - 1):
+            d = dist(seq[k], a, b)
+            if d > dmax:
+                idx, dmax = k, d
+        if dmax > tol:
+            return rdp(seq[:idx + 1])[:-1] + rdp(seq[idx:])
+        return [a, b]
+
+    far = max(range(len(pts)), key=lambda k: math.hypot(pts[k][0] - pts[0][0],
+                                                          pts[k][1] - pts[0][1]))
+    first = rdp(pts[:far + 1])
+    second = rdp(pts[far:] + [pts[0]])
+    return first[:-1] + second[:-1]
+
+
+def _ring_area(pts) -> float:
+    """Área COM SINAL (anti-horário positiva) de um anel (lista de (x, y))."""
+    return sum(pts[i][0] * pts[(i + 1) % len(pts)][1]
+               - pts[(i + 1) % len(pts)][0] * pts[i][1]
+               for i in range(len(pts))) / 2.0
+
+
+def detect_rooms(records, *, cell: float = 0.01, min_area: float = 1.0,
+                 extra=()) -> list:
+    """Acha os AMBIENTES fechados pelas paredes (e esquadrias) de ``records``: o
+    espaço livre, separado em regiões, menos a região de fora. Cada ambiente é
+    ``{"outline": [[x, y]…] (anti-horário), "holes": [[[x, y]…]…] (pilares e
+    ilhas), "area": m²}``, do maior para o menor.
+
+    Porta fechada para este fim (o retângulo da parede cobre o vão), então a
+    porta SEPARA os cômodos; uma abertura sem parede (um vão sem peça) JUNTA os
+    dois lados — nesse caso ponha uma peça ou uma entrada em ``extra`` (outros
+    registros com ``a``, ``b`` e ``thickness``). ``cell`` é a grade (m); a área sai
+    da grade e o contorno é simplificado a ~1,2 célula. Regiões menores que
+    ``min_area`` não viram ambiente."""
+    import numpy as np
+    feet = _footprints(list(records) + list(extra))
+    if not feet:
+        return []
+    xs = [f[0] for f in feet] + [f[0] + f[2] * f[4] for f in feet]
+    ys = [f[1] for f in feet] + [f[1] + f[3] * f[4] for f in feet]
+    pad_m = 1.0
+    x0, y0 = min(xs) - pad_m, min(ys) - pad_m
+    nx = int((max(xs) + pad_m - x0) / cell) + 2
+    ny = int((max(ys) + pad_m - y0) / cell) + 2
+    if nx * ny > 40_000_000:
+        raise BimProtoError("the plan is too large for this cell size")
+    solid = np.zeros((ny, nx), dtype=bool)
+    for ax, ay, ux, uy, ln, th in feet:
+        reach = ln + th
+        i0 = max(int((min(ax, ax + ux * ln) - th - x0) / cell) - 1, 0)
+        i1 = min(int((max(ax, ax + ux * ln) + th - x0) / cell) + 2, nx)
+        j0 = max(int((min(ay, ay + uy * ln) - th - y0) / cell) - 1, 0)
+        j1 = min(int((max(ay, ay + uy * ln) + th - y0) / cell) + 2, ny)
+        gx = x0 + (np.arange(i0, i1) + 0.5) * cell
+        gy = y0 + (np.arange(j0, j1) + 0.5) * cell
+        X, Y = np.meshgrid(gx, gy)
+        s = (X - ax) * ux + (Y - ay) * uy
+        t = -(X - ax) * uy + (Y - ay) * ux
+        solid[j0:j1, i0:i1] |= (s >= 0) & (s <= ln) & (np.abs(t) <= th / 2.0)
+    free = ~solid
+    # componentes conexos (4 vizinhos) por varredura
+    labels = np.zeros((ny, nx), dtype=np.int32)
+    comps, count = [], 0
+    flat_free = free.ravel()
+    flat_lab = labels.ravel()
+    for start in np.flatnonzero(flat_free):
+        if flat_lab[start]:
+            continue
+        count += 1
+        stack, size, touches = [int(start)], 0, False
+        flat_lab[start] = count
+        while stack:
+            c = stack.pop()
+            size += 1
+            j, i = divmod(c, nx)
+            if i == 0 or j == 0 or i == nx - 1 or j == ny - 1:
+                touches = True
+            for n_ in (c - 1, c + 1, c - nx, c + nx):
+                if 0 <= n_ < flat_free.size and flat_free[n_] and not flat_lab[n_]:
+                    if (n_ == c - 1 and i == 0) or (n_ == c + 1 and i == nx - 1):
+                        continue
+                    flat_lab[n_] = count
+                    stack.append(n_)
+        comps.append((count, size, touches))
+    out = []
+    for lab, size, touches in comps:
+        if touches or size * cell * cell < min_area:
+            continue
+        mask = labels == lab
+        rings = []
+        for loop in _chain_loops(mask):
+            pts = [(x0 + i * cell, y0 + j * cell) for i, j in loop]
+            simp = _simplify_ring(pts, 1.2 * cell)
+            if len(simp) >= 3 and abs(_ring_area(simp)) > cell * cell:
+                rings.append(simp)
+        if not rings:
+            continue
+        outer = max(rings, key=_ring_area)
+        holes = [r for r in rings if r is not outer and _ring_area(r) < 0]
+        out.append({"outline": [[round(x, 4), round(y, 4)] for x, y in outer],
+                    "holes": [[[round(x, 4), round(y, 4)] for x, y in h] for h in holes],
+                    "area": round(size * cell * cell, 3)})
+    out.sort(key=lambda r: -r["area"])
+    return out
+
+
+def normalize_room(rec: dict) -> dict:
+    """Registro de um ambiente (zona de piso): ``outline`` (anel anti-horário de
+    pontos (x, y) em metros), ``holes`` (anéis dos pilares/ilhas), ``name``,
+    ``thickness`` da laje fina de piso e ``level``/``base_offset``. A ``area`` é
+    DERIVADA do contorno (área do anel menos os buracos)."""
+    try:
+        outline = [[float(x), float(y)] for x, y in rec["outline"]]
+        holes = [[[float(x), float(y)] for x, y in h] for h in rec.get("holes") or []]
+        out = {"kind": "room", "name": str(rec.get("name", "")), "outline": outline,
+               "holes": holes, "level": str(rec["level"]),
+               "base_offset": float(rec.get("base_offset", 0.0)),
+               "thickness": float(rec.get("thickness", 0.01)),
+               "use": str(rec.get("use", ""))}
+    except (KeyError, TypeError, ValueError) as exc:
+        raise BimProtoError(f"bad room record: {exc}") from exc
+    if len(outline) < 3 or any(len(h) < 3 for h in holes):
+        raise BimProtoError("a room needs a ring of at least 3 points")
+    nums = [v for p in outline for v in p] + [v for h in holes for p in h for v in p] \
+        + [out["base_offset"], out["thickness"]]
+    if not all(math.isfinite(v) for v in nums):
+        raise BimProtoError("non-finite value in the room record")
+    if out["thickness"] <= _EPS:
+        raise BimProtoError("the floor slab needs a positive thickness")
+    if _ring_area(outline) <= _EPS:
+        out["outline"] = outline[::-1]                  # sempre anti-horário
+    if _ring_area(out["outline"]) <= _EPS:
+        raise BimProtoError("the room has no area")
+    out["holes"] = [h if _ring_area(h) < 0 else h[::-1] for h in holes]
+    out["area"] = round(room_area(out), 3)
+    return out
+
+
+def room_area(rec) -> float:
+    """Área (m²) do ambiente: o anel externo menos os buracos."""
+    return _ring_area([tuple(p) for p in rec["outline"]]) \
+        + sum(_ring_area([tuple(p) for p in h]) for h in rec.get("holes") or [])
+
+
+def room_mesh(rec: dict, base_z: float) -> Mesh:
+    """Laje fina de piso do ambiente, fechada, com os pilares como furos."""
+    outer = [tuple(p) for p in rec["outline"]]
+    holes = [[tuple(p) for p in h] for h in rec["holes"]]
+    z0, z1 = base_z, base_z + rec["thickness"]
+
+    def loop(pts, z):
+        return [QVector3D(x, y, z) for x, y in pts]
+
+    mesh = Mesh()
+    mesh.add_face(list(reversed(loop(outer, z0))),
+                  [list(reversed(loop(h, z0))) for h in holes])
+    mesh.add_face(loop(outer, z1), [loop(h, z1) for h in holes])
+    for ring in [outer] + holes:
+        for i in range(len(ring)):
+            j = (i + 1) % len(ring)
+            a, b = ring[i], ring[j]
+            mesh.add_face([QVector3D(a[0], a[1], z0), QVector3D(b[0], b[1], z0),
+                           QVector3D(b[0], b[1], z1), QVector3D(a[0], a[1], z1)])
+    return mesh
+
+
+def room_record(group):
+    ext = getattr(group, "ext", None)
+    rec = ext.get(KEY) if isinstance(ext, dict) else None
+    return rec if isinstance(rec, dict) and rec.get("kind") == "room" else None
+
+
+def rooms(scene) -> list:
+    return [g for g in scene.groups if room_record(g) is not None]
+
+
+def create_rooms(viewport, found, *, level="PB", names=None, thickness=0.01) -> list:
+    """Cria os ambientes de ``found`` (a saída de :func:`detect_rooms`) numa
+    zona de piso cada — UM passo de desfazer, tudo ou nada. ``names`` é uma lista
+    na mesma ordem (ou um ``dict`` índice→nome); sem nome, ``Ambiente N``."""
+    found = list(found)
+    made: list = []
+
+    def mutate(scene):
+        scene.plugin_data[KEY] = project_data(scene)
+        for idx, f in enumerate(found):
+            nm = (names or {}).get(idx) if isinstance(names, dict) else \
+                (names[idx] if names is not None and idx < len(names) else None)
+            g = _build_piece(scene, dict(f, level=level, thickness=thickness,
+                                         name=nm or ""), "room")
+            if nm:
+                g.name = nm
+                g.ifc = {"class": "IfcSpace", "name": nm}
+            scene.groups.append(g)
+            made.append(g)
+
+    if not found:
+        return []
+    return made if _run(viewport, mutate) else []
+
+
+def _inside(pt, ring) -> bool:
+    return _pip(pt, [tuple(p) for p in ring])
+
+
+def name_rooms(found, hints) -> list:
+    """Um nome por ambiente de ``found``, pelas dicas ``hints`` — uma lista de
+    ``(x, y, nome)`` (p.ex. onde há louça sanitária ou bancada de cozinha, vindas
+    dos blocos de uma planta). Vale o nome que mais se repete dentro do ambiente;
+    sem dica dentro, ``None`` (o chamador dá o nome). Ordem de ``found``."""
+    names = []
+    for f in found:
+        votes: dict = {}
+        for x, y, nm in hints:
+            if _inside((x, y), f["outline"]) and not any(
+                    _inside((x, y), h) for h in f.get("holes") or []):
+                votes[nm] = votes.get(nm, 0) + 1
+        names.append(max(votes, key=votes.get) if votes else None)
+    return names
+
+
+def area_table(scene, *, decimal: str = ",") -> list:
+    """``[(nome, "41,18")…]`` — a tabela de área útil estimada: um ambiente por
+    linha, na ordem do documento, com a área em m² e duas casas."""
+    out = []
+    for g in rooms(scene):
+        rec = room_record(g)
+        out.append((g.name, f"{room_area(rec):.2f}".replace(".", decimal)))
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Regra de giro: a porta SEMPRE abre para a parede (encosta na parede ao lado)
 # ---------------------------------------------------------------------------
 
@@ -998,6 +1318,7 @@ _KINDS = {
     "sill": (normalize_sill, sill_mesh, "IfcMember", "Sill"),
     "leaf": (normalize_leaf, leaf_mesh, "IfcDoor", "Door leaf"),
     "block": (normalize_block, None, None, "Block"),
+    "room": (normalize_room, room_mesh, "IfcSpace", "Room"),
 }
 
 
@@ -1334,6 +1655,7 @@ def plan_drawing(scene, cut_z: float = 1.2, *, tol: float = 0.005) -> dict:
     * ``"cut"``   — anéis (arrays (N, 2)) do que o plano corta: o poché;
     * ``"below"`` — segmentos ``(x0, y0, x1, y1)`` do que está ABAIXO do corte
       e se vê de cima (peitoris, folhas, mobília), linha fina;
+    * ``"rooms"`` — os ambientes do documento: ``name``, ``outline``, ``holes``, ``area``;
     * ``"above"`` — segmentos da PROJEÇÃO do que está ACIMA do corte (verga
       sobre a porta, travessa do marco, beiral…), para sair TRACEJADO; só o que
       não coincide com o corte nem com o que está abaixo (``tol`` em metros).
@@ -1346,7 +1668,8 @@ def plan_drawing(scene, cut_z: float = 1.2, *, tol: float = 0.005) -> dict:
     from core.section import SectionPlane
 
     bounds = _scene_bounds(scene)
-    empty = {"cut": [], "below": np.zeros((0, 4)), "above": np.zeros((0, 4))}
+    empty = {"cut": [], "below": np.zeros((0, 4)), "above": np.zeros((0, 4)),
+             "rooms": []}
     if bounds is None:
         return empty
     lo, hi = bounds
@@ -1405,7 +1728,10 @@ def plan_drawing(scene, cut_z: float = 1.2, *, tol: float = 0.005) -> dict:
             for p, q in _uncovered((x0, y0), (x1, y1), ref_now, tol):
                 proj.append((p[0], p[1], q[0], q[1]))
     return {"cut": cut, "below": below_xy,
-            "above": np.asarray(proj, float).reshape(-1, 4)}
+            "above": np.asarray(proj, float).reshape(-1, 4),
+            "rooms": [{"name": g.name, "outline": r["outline"], "holes": r["holes"],
+                       "area": room_area(r)}
+                      for g in rooms(scene) for r in [room_record(g)]]}
 
 
 #: Estilos da planta 2D. Larguras e tracejado em PONTOS de papel. ``"ao"`` foi MEDIDO
@@ -1423,10 +1749,12 @@ PLAN_STYLES = {
 
 
 def render_plan(plan: dict, width: int = 1600, margin: int = 40, title: str = "",
-                legend: bool = True, style: str = "ao", px_per_pt: float = 2.0):
+                legend: bool = True, style: str = "ao", px_per_pt: float = 2.0,
+                labels: bool = False):
     """Desenha o resultado de :func:`plan_drawing` numa ``QImage`` — poché, linha fina
     para o que está abaixo do corte e TRACEJADO para a projeção do que está acima,
-    como na planta do AutoCAD. ``style``: chave de :data:`PLAN_STYLES` (``"ao"`` por
+    como na planta do AutoCAD; ``labels=True`` escreve nome e área de cada ambiente
+    (``plan["rooms"]``). ``style``: chave de :data:`PLAN_STYLES` (``"ao"`` por
     padrão); ``px_per_pt`` converte os pontos do estilo em pixels. Sem janela e sem GL."""
     import numpy as np
     from PySide6.QtCore import QPointF, Qt
@@ -1482,6 +1810,15 @@ def render_plan(plan: dict, width: int = 1600, margin: int = 40, title: str = ""
         for a, b, c, d in plan["below"]:
             p.drawLine(QPointF(X(a), Y(b)), QPointF(X(c), Y(d)))
 
+    if labels:                          # um véu claro sob as linhas: onde é cada ambiente
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#f1f1ee"))
+        for rm in plan.get("rooms", []):
+            p.drawPolygon(QPolygonF([QPointF(X(a), Y(b)) for a, b in rm["outline"]]))
+            p.setBrush(QColor("white"))
+            for h in rm["holes"]:
+                p.drawPolygon(QPolygonF([QPointF(X(a), Y(b)) for a, b in h]))
+            p.setBrush(QColor("#f1f1ee"))
     if st["lines_under_cut"]:
         below()
         poche()
@@ -1491,6 +1828,24 @@ def render_plan(plan: dict, width: int = 1600, margin: int = 40, title: str = ""
     p.setPen(pen(st["above"], dashed=True))
     for a, b, c, d in plan["above"]:
         p.drawLine(QPointF(X(a), Y(b)), QPointF(X(c), Y(d)))
+    if labels:
+        p.setFont(QFont("DejaVu Sans", 11))
+        p.setPen(QColor("#111"))
+        for rm in plan.get("rooms", []):
+            ring = rm["outline"]
+            a2 = _ring_area([tuple(q) for q in ring]) * 2
+            cx = sum((ring[i][0] + ring[(i + 1) % len(ring)][0])
+                     * (ring[i][0] * ring[(i + 1) % len(ring)][1]
+                        - ring[(i + 1) % len(ring)][0] * ring[i][1])
+                     for i in range(len(ring))) / (3 * a2)
+            cy = sum((ring[i][1] + ring[(i + 1) % len(ring)][1])
+                     * (ring[i][0] * ring[(i + 1) % len(ring)][1]
+                        - ring[(i + 1) % len(ring)][0] * ring[i][1])
+                     for i in range(len(ring))) / (3 * a2)
+            txt = f"{rm['name']}\n{rm['area']:.2f} m²".replace(".", ",")
+            r = p.boundingRect(0, 0, 400, 100, Qt.AlignCenter, txt)
+            p.drawText(int(X(cx) - r.width() / 2), int(Y(cy) - r.height() / 2),
+                       r.width(), r.height(), Qt.AlignCenter, txt)
     p.setFont(QFont("DejaVu Sans", 12))
     p.setPen(QColor("#222"))
     if title:
@@ -1995,6 +2350,8 @@ def project_tree_model(scene) -> list:
     levels = []
     for lv in sorted(data["levels"], key=lambda v: float(v.get("z", 0))):
         kids = [(g.name if element_record(g)["kind"] in ("sill", "leaf", "block") else
+                 f"{g.name} — {room_area(element_record(g)):.2f} m²"
+                 if element_record(g)["kind"] == "room" else
                  f"{g.name} — {_len(element_record(g)):.2f} m", [])
                 for g in by_level.get(lv.get("id"), [])]
         levels.append((f"{lv.get('name', lv.get('id'))}  (+{float(lv['z']):.2f} m)",
@@ -2069,6 +2426,9 @@ def _outliner_kind(group):
             ("Mullions", str(len(rec["divisions"]))),
             ("Height", f"{rec['height']:.2f} m")]}
     rec = element_record(group)
+    if rec is not None and rec["kind"] == "room":
+        return {"type": _t("Room"), "props": [
+            ("Level", rec["level"]), ("Area", f"{room_area(rec):.2f} m²")]}
     if rec is not None and rec["kind"] == "block":
         return {"type": _t("Block"), "props": [
             ("Level", rec["level"]), ("Block", rec["block"])]}

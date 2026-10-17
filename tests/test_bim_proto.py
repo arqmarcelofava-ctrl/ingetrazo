@@ -1425,3 +1425,108 @@ def test_auto_swing_fills_the_side_and_an_override_still_wins(vp):
                                auto_swing=True,
                                overrides=lambda w, i, o: {"side": -1})
     assert mod.element_record(lf2)["side"] == -1 and mod.element_record(lf2)["hinge"] == "a"
+
+
+# ---- rooms (ambientes): detected from the walls, with name and area --------------------
+
+def _wall_rec(a, b, t=0.2):
+    return {"kind": "wall", "a": list(a), "b": list(b), "thickness": t, "level": "PB"}
+
+
+def _box_room(extra=()):
+    return [_wall_rec((0, 0), (6, 0)), _wall_rec((6, 0), (6, 4)),
+            _wall_rec((6, 4), (0, 4)), _wall_rec((0, 4), (0, 0))] + list(extra)
+
+
+def test_a_closed_box_is_one_room_with_the_inside_area():
+    (r,) = mod.detect_rooms(_box_room())
+    assert r["area"] == pytest.approx((6 - 0.2) * (4 - 0.2), rel=0.005)
+    assert len(r["outline"]) == 4 and r["holes"] == []
+    assert mod._ring_area([tuple(p) for p in r["outline"]]) > 0          # counter-clockwise
+
+
+def test_a_partition_splits_the_room_and_a_pillar_is_a_hole():
+    recs = _box_room([_wall_rec((3, 0), (3, 4), 0.1),
+                      _wall_rec((1.5, 1.5), (1.5, 1.9), 0.4)])
+    left, right = sorted(mod.detect_rooms(recs), key=lambda r: r["outline"][0][0])
+    assert right["area"] == pytest.approx((6 - 0.1 - 3.05) * 3.8, rel=0.005)
+    assert left["area"] == pytest.approx((2.95 - 0.1) * 3.8 - 0.4 * 0.4, rel=0.005)
+    assert len(left["holes"]) == 1 and len(right["holes"]) == 0
+
+
+def test_a_door_does_not_join_rooms_but_a_gap_with_no_wall_does():
+    door = _box_room([dict(_wall_rec((3, 0), (3, 4), 0.1),
+                           openings=[{"s0": 1.5, "s1": 2.4, "sill": 0.0, "head": 2.1}])])
+    assert len(mod.detect_rooms(door)) == 2                # the wall covers its door
+    leak = _box_room([_wall_rec((3, 0), (3, 1.4), 0.1), _wall_rec((3, 2.4), (3, 4), 0.1)])
+    assert len(mod.detect_rooms(leak)) == 1                # no piece in the gap: it is one space
+    closed = mod.detect_rooms(leak, extra=[_wall_rec((3, 1.4), (3, 2.4), 0.1)])
+    assert len(closed) == 2
+
+
+def test_a_frame_closes_the_room_like_a_wall():
+    frame = {"kind": "frame", "a": [3, 1.4], "b": [3, 2.4], "depth": 0.06, "level": "PB",
+             "height": 2.8, "divisions": [], "panel": "glass", "panel_thickness": 0.01,
+             "mullion": 0.05, "base_offset": 0.0, "ifc": "IfcWindow", "rails": []}
+    leak = _box_room([_wall_rec((3, 0), (3, 1.4), 0.1), _wall_rec((3, 2.4), (3, 4), 0.1), frame])
+    assert len(mod.detect_rooms(leak)) == 2
+
+
+def test_the_outside_and_tiny_regions_are_not_rooms():
+    assert len(mod.detect_rooms(_box_room())) == 1         # not the street around it
+    tiny = _box_room([_wall_rec((0.1, 0.8), (1.2, 0.8)), _wall_rec((1.2, 0.8), (1.2, 0.1))])
+    assert all(r["area"] >= 1.0 for r in mod.detect_rooms(tiny))
+    assert mod.detect_rooms([]) == []
+
+
+def test_rooms_are_named_by_the_hints_inside_them():
+    recs = _box_room([_wall_rec((3, 0), (3, 4), 0.1)])
+    found = sorted(mod.detect_rooms(recs), key=lambda r: r["outline"][0][0])
+    names = mod.name_rooms(found, [(1, 1, "Cozinha"), (1.2, 2, "Cozinha"), (1, 3, "Banheiro"),
+                                   (-5, -5, "Fora")])
+    assert names == ["Cozinha", None]
+
+
+def test_rooms_become_floor_zones_in_one_undo_step_with_the_area_table(vp):
+    found = mod.detect_rooms(_box_room([_wall_rec((3, 0), (3, 4), 0.1),
+                                        _wall_rec((1.5, 1.5), (1.5, 1.9), 0.4)]))
+    steps = len(vp.history.undo_stack)
+    made = mod.create_rooms(vp, found, names=["Sala", "Quarto"])
+    assert len(made) == 2 and len(vp.history.undo_stack) == steps + 1
+    assert all(g.ifc["class"] == "IfcSpace" for g in made)
+    for g in made:
+        rec = mod.room_record(g)
+        assert _volume(g) == pytest.approx(rec["area"] * 0.01, rel=1e-3)      # closed slab
+    rows = dict(mod.area_table(vp.scene))
+    assert set(rows) == {"Sala", "Quarto"} and all("," in v for v in rows.values())
+    vp.history.undo()
+    assert mod.rooms(vp.scene) == []
+
+
+def test_rooms_survive_reopening_and_update_3d_and_show_in_the_tree(vp, tmp_path):
+    found = mod.detect_rooms(_box_room())
+    (g,) = mod.create_rooms(vp, found, names=["Sala"])
+    good = _geom(g)
+    g.mesh = mod.Mesh()
+    assert mod.update_3d(vp, [g]) == 1 and _geom(g) == good
+    igz.save_scene(vp.scene, tmp_path / "r.igz")
+    sc = Scene()
+    igz.load_into(sc, tmp_path / "r.igz")
+    (back,) = mod.rooms(sc)
+    assert back.name == "Sala" and mod.room_record(back)["area"] == pytest.approx(found[0]["area"])
+    levels, _v, _s = mod.project_tree_model(vp.scene)
+    (pb,) = [lv for lv in levels[1] if lv[0].startswith("PB")]
+    assert any(label.startswith("Sala — ") and label.endswith(" m²") for label, _ in pb[1])
+    assert mod._outliner_kind(g)["type"] == "Room"
+
+
+def test_the_plan_labels_the_rooms(vp):
+    mod.create_walls(vp, [_w((0, 0), (6, 0), 0.2), _w((6, 0), (6, 4), 0.2),
+                          _w((6, 4), (0, 4), 0.2), _w((0, 4), (0, 0), 0.2)])
+    mod.create_rooms(vp, mod.detect_rooms([mod.wall_record(g) for g in mod.walls(vp.scene)]),
+                     names=["Sala"])
+    plan = mod.plan_drawing(vp.scene, 1.2)
+    assert plan["rooms"][0]["name"] == "Sala" and plan["rooms"][0]["area"] > 20
+    plain = mod.render_plan(plan, width=800)
+    labelled = mod.render_plan(plan, width=800, labels=True)
+    assert plain.size() == labelled.size() and plain != labelled

@@ -315,7 +315,8 @@ repositório.
 | Blocos de biblioteca | `load_block_library(caminho.skp)` abre um `.skp` numa cena à parte e devolve `{nome do componente: grupo}`; `create_blocks(viewport, biblioteca, escolher)` põe uma **instância** do componente em cada abertura (`kind: "block"`: eixo, `s`, `block`, `flip`, `side`, `t_offset`), num passo de desfazer. A instância só ganha uma matriz e **compartilha a malha** do componente (editar o bloco muda todas as portas). Convenção do bloco: origem no centro do vão, no chão e no eixo da parede; +X ao longo da parede; +Y para o lado de abrir; +Z para cima. |
 | Planta 2D com projeções | `plan_drawing(cena, corte=1.2)` devolve `cut` (anéis do poché), `below` (linhas do que está abaixo do corte) e `above` (a **projeção** do que está acima: verga sobre a porta, viga, armário alto…, só o que não coincide com o corte nem com o que está abaixo); `render_plan(plano, style="ao"|"cad")` pinta numa `QImage` com poché, linha fina e **tracejado**, como no AutoCAD; o estilo `ao` segue o padrão MEDIDO de um PDF de layout do escritório (ver item 16). Dois passes do `core.hlr` (plano de corte normal para cima e para baixo), sem GL; a cena não é alterada. |
 | Giro da porta | `door_swing(registros, parede, abertura)`: regra «a porta SEMPRE abre para a parede» — dobradiça no lado do canto, folha aberta a 90° rente à parede perpendicular (até 1 m do batente, com comprimento para receber a folha). Devolve dobradiça, lado, folga, e as `alternatives` (outras paredes que também recebem a folha); `ambiguous` quando a regra sozinha não decide. `create_leaves(auto_swing=True)` aplica; `overrides` manda por cima. |
-| Atualizar 3D | `update_3d(viewport, alvos=None)`: regenera paredes, esquadrias, peitoris, portas e blocos (seleção, ou todas) de seus registros e dos níveis, **todas num único passo**. |
+| Ambientes | `detect_rooms(registros)` acha os cômodos fechados pelas paredes e esquadrias (grade de 1 cm, contorno simplificado, pilares viram buracos, a região de fora e as menores que 1 m² não contam); `name_rooms` dá o nome por dicas (p.ex. bloco de cozinha); `create_rooms` cria uma **zona de piso** fechada (`IfcSpace`) por ambiente em 1 passo; `area_table` devolve a tabela de área útil (vírgula decimal); `render_plan(..., labels=True)` escreve nome e área. |
+| Atualizar 3D | `update_3d(viewport, alvos=None)`: regenera paredes, esquadrias, peitoris, portas, blocos e ambientes (seleção, ou todas) de seus registros e dos níveis, **todas num único passo**. |
 | Editar + atualizar | `edit_walls(viewport, alvos, **parametros)`: 1 passo, desfaz parâmetros e geometria. |
 | Navegador | `add_outliner_kind` rotula a parede ("Parede", nível, espessura, altura). |
 
@@ -543,6 +544,20 @@ Achados que valem para qualquer planta importada:
     entram ainda:** hachura/ripas de piso, escada com linha de quebra, círculos de
     destaque, tracejado vermelho de demolição, e o texto/cotas. O PDF é de **outro
     apartamento** (e tem nome de cliente): não foi copiado para o repositório.
+
+17. **Ambientes (zonas de piso) detectados pelas paredes.** Prova em exemplos de teste:
+    caixa fechada = 1 ambiente com a área interna exata (±0,5 %), divisória divide em
+    dois, pilar vira buraco, **porta fechada separa os cômodos e vão sem peça junta os
+    dois lados**, esquadria fecha como parede, a região de fora não é ambiente. No
+    apartamento real **só 5 ambientes saíram** (18,48; 14,70; 2,94; 2,27 e 1,56 m², ao
+    todo 39,94 m²; dois banheiros nomeados pelos blocos de louça, os outros ficaram
+    «Ambiente N»), em ~12 s. O resto da planta **vaza**: o modelo só tem a camada de
+    alvenaria, faltam as divisórias de outras camadas (layout/gesso), 6 portas sem peça de
+    parede no vão e a fachada incompleta, então os cômodos se juntam num espaço
+    aberto — o detector não inventa parede. Saídas: reconstruir também essas camadas, ou
+    pôr peças de fechamento em `extra`. As áreas saem de uma grade (±0,3 % em 2 cm, melhor
+    em 1 cm, o padrão); o DWG de teste não tem nomes de cômodo (só um texto
+    «proj. pavimento superior»).
 
 ### Peitoril e folha aberta (exemplo sintético)
 
