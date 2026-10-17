@@ -793,6 +793,89 @@ def leaf_mesh(rec: dict, base_z: float) -> Mesh:
 
 
 # ---------------------------------------------------------------------------
+# Regra de giro: a porta SEMPRE abre para a parede (encosta na parede ao lado)
+# ---------------------------------------------------------------------------
+
+def door_swing(records, wall_index: int, opening_index: int, *, width=None,
+               max_gap: float = 1.0, perpendicular: float = 20.0,
+               ambiguity: float = 0.10):
+    """Para onde a porta de ``records[wall_index].openings[opening_index]``
+    deve abrir, pela regra «a folha abre para a parede»: a dobradiça fica do
+    lado do CANTO e a folha, aberta a 90°, fica rente à parede que faz o canto.
+
+    Devolve ``{"hinge": "a"|"b", "side": +1|-1, "gap": m, "wall": índice da
+    parede que recebe a folha}`` ou ``None`` se nenhuma parede perpendicular
+    fica a até ``max_gap`` (m, da face da parede ao batente; padrão 1 m) com comprimento
+    suficiente para receber a folha (a largura da porta, ou ``width``).
+    O ``gap`` é a folga entre o batente e essa parede; ganha o canto mais colado.
+    ``alternatives`` lista as outras escolhas que também encostam numa parede e
+    ``ambiguous`` é verdadeiro quando alguma está a menos de ``ambiguity`` (m) da
+    melhor: nesse caso a regra sozinha não decide. ``side`` +1 é a esquerda do eixo ``a``→``b`` da parede."""
+    w = records[wall_index]
+    o = w["openings"][opening_index]
+    (ax, ay), (bx, by) = w["a"], w["b"]
+    length = math.hypot(bx - ax, by - ay)
+    u = ((bx - ax) / length, (by - ay) / length)
+    n = (-u[1], u[0])
+    leaf = (o["s1"] - o["s0"]) if width is None else float(width)
+    sin_min = math.cos(math.radians(perpendicular))   # |sin| mínimo de 90° ± folga
+    found = []
+    for j, v in enumerate(records):
+        if j == wall_index or v.get("level") != w.get("level"):
+            continue
+        va, vb = v["a"], v["b"]
+        lv = math.hypot(vb[0] - va[0], vb[1] - va[1])
+        if lv <= _EPS:
+            continue
+        vu = ((vb[0] - va[0]) / lv, (vb[1] - va[1]) / lv)
+        if abs(u[0] * vu[1] - u[1] * vu[0]) < sin_min:    # não é perpendicular
+            continue
+        offs = [(p[0] - ax) * n[0] + (p[1] - ay) * n[1] for p in (va, vb)]
+        ss = [(p[0] - ax) * u[0] + (p[1] - ay) * u[1] for p in (va, vb)]
+        if min(abs(x) for x in offs) > 0.3 + v["thickness"]:  # não encosta nesta parede
+            continue
+        s_v = (ss[0] + ss[1]) / 2.0
+        for side in (1, -1):
+            if max(side * x for x in offs) < 0.7 * leaf:      # curta demais p/ a folha
+                continue
+            for hinge, s_h, ok in (("a", o["s0"], s_v <= o["s0"] + 0.05),
+                                   ("b", o["s1"], s_v >= o["s1"] - 0.05)):
+                if not ok:
+                    continue
+                gap = abs(s_h - s_v) - v["thickness"] / 2.0
+                if -0.05 <= gap <= max_gap:
+                    found.append({"hinge": hinge, "side": side, "gap": gap,
+                                  "wall": j})
+    if not found:
+        return None
+    found.sort(key=lambda c: c["gap"])
+    best = dict(found[0])
+    # outra escolha que também «abre para a parede» e quase tão colada: a regra
+    # sozinha não decide (precisa saber QUAL ambiente a porta serve)
+    best["alternatives"] = [c for c in found[1:]
+                            if (c["hinge"], c["side"]) != (best["hinge"], best["side"])]
+    best["ambiguous"] = any(c["gap"] - best["gap"] <= ambiguity
+                            for c in best["alternatives"])
+    return best
+
+
+def swing_overrides(records):
+    """Um ``overrides`` para :func:`create_leaves` (e base para a ``choose`` de
+    :func:`create_blocks`) que dá a cada porta o lado de :func:`door_swing`;
+    a porta sem parede ao lado fica com o padrão."""
+    recs = list(records)
+
+    def pick(w, idx, o):
+        for i, r in enumerate(recs):
+            if r["a"] == w["a"] and r["b"] == w["b"] and r.get("openings") == w.get("openings"):
+                found = door_swing(recs, i, idx)
+                return {"hinge": found["hinge"], "side": found["side"]} if found else None
+        return None
+
+    return pick
+
+
+# ---------------------------------------------------------------------------
 # Blocos de biblioteca: um componente (p.ex. do SketchUp) posto numa abertura
 # ---------------------------------------------------------------------------
 # Convenção do bloco (a mesma que um desenhista segue ao modelar o componente):
@@ -973,7 +1056,8 @@ def create_sills(viewport, targets=None, *, thickness=0.03, projection=0.05,
         lambda o: o["sill"] > _EPS)
 
 
-def create_leaves(viewport, targets=None, *, overrides=None, **params) -> list:
+def create_leaves(viewport, targets=None, *, overrides=None, auto_swing=False,
+                  **params) -> list:
     """Uma porta para cada ABERTURA DE PORTA (``sill`` 0) das paredes ``targets``
     (ou de todas) — um único passo de desfazer, tudo ou nada.
 
@@ -981,14 +1065,21 @@ def create_leaves(viewport, targets=None, *, overrides=None, **params) -> list:
     ``thickness``, ``hinge``, ``side``, ``angle``, ``clearance``, ``frame``,
     ``trim``, ``arc``, ``open``…) e valem para todas. ``overrides(parede,
     índice, abertura)`` pode devolver um dict com campos só daquela porta (ou
-    ``None``) — é como cada porta de uma planta ganha o seu lado e o seu tipo."""
+    ``None``) — é como cada porta de uma planta ganha o seu lado e o seu tipo.
+    ``auto_swing=True`` aplica a regra «a porta abre para a parede»
+    (:func:`door_swing`) às portas que têm parede ao lado; ``overrides`` ainda
+    manda por cima dela."""
     base = {"thickness": 0.04, "hinge": "a", "side": 1, "angle": 0.0,
             "clearance": 0.01}
     base.update(params)
+    auto = swing_overrides([wall_record(g) for g in walls(viewport.scene)]) \
+        if auto_swing else None
 
     def extra(w, o, idx=0):
         rec = dict(base, head=o["head"], s0=o["s0"], s1=o["s1"],
                    wall_thickness=w["thickness"])
+        if auto is not None:
+            rec.update(auto(w, idx, o) or {})
         if overrides is not None:
             rec.update(overrides(w, idx, o) or {})
         return rec

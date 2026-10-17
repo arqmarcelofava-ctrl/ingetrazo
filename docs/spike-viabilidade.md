@@ -314,6 +314,7 @@ repositório.
 | Porta detalhada | `kind: "leaf"` com `style` `swing` (folha de 35 mm que gira em torno da dobradiça; `frame` = marco com dois batentes rebaixados e travessa; `trim` = guarnição nas duas faces; `arc` = arco de giro como arestas) ou `sliding` (porta de correr de vidro: bastidor de 35 mm, montantes de 50 mm, vidro de 10 mm; `open` 0–1). `create_leaves(..., overrides=f)` dá a cada porta o seu lado, a sua dobradiça e o seu tipo. |
 | Blocos de biblioteca | `load_block_library(caminho.skp)` abre um `.skp` numa cena à parte e devolve `{nome do componente: grupo}`; `create_blocks(viewport, biblioteca, escolher)` põe uma **instância** do componente em cada abertura (`kind: "block"`: eixo, `s`, `block`, `flip`, `side`, `t_offset`), num passo de desfazer. A instância só ganha uma matriz e **compartilha a malha** do componente (editar o bloco muda todas as portas). Convenção do bloco: origem no centro do vão, no chão e no eixo da parede; +X ao longo da parede; +Y para o lado de abrir; +Z para cima. |
 | Planta 2D com projeções | `plan_drawing(cena, corte=1.2)` devolve `cut` (anéis do poché), `below` (linhas do que está abaixo do corte) e `above` (a **projeção** do que está acima: verga sobre a porta, viga, armário alto…, só o que não coincide com o corte nem com o que está abaixo); `render_plan(plano)` pinta numa `QImage` com poché, linha fina e **tracejado**, como no AutoCAD. Dois passes do `core.hlr` (plano de corte normal para cima e para baixo), sem GL; a cena não é alterada. |
+| Giro da porta | `door_swing(registros, parede, abertura)`: regra «a porta SEMPRE abre para a parede» — dobradiça no lado do canto, folha aberta a 90° rente à parede perpendicular (até 1 m do batente, com comprimento para receber a folha). Devolve dobradiça, lado, folga, e as `alternatives` (outras paredes que também recebem a folha); `ambiguous` quando a regra sozinha não decide. `create_leaves(auto_swing=True)` aplica; `overrides` manda por cima. |
 | Atualizar 3D | `update_3d(viewport, alvos=None)`: regenera paredes, esquadrias, peitoris, portas e blocos (seleção, ou todas) de seus registros e dos níveis, **todas num único passo**. |
 | Editar + atualizar | `edit_walls(viewport, alvos, **parametros)`: 1 passo, desfaz parâmetros e geometria. |
 | Navegador | `add_outliner_kind` rotula a parede ("Parede", nível, espessura, altura). |
@@ -513,6 +514,19 @@ Achados que valem para qualquer planta importada:
     função e a imagem), e a planta não vai para a prancha — falta o gancho de pintura
     por quadro (item 3.1.1); tipos de linha por classe (eixo, projeção, oculto) e
     cotas também não existem.
+
+15. **Regra «a porta abre para a parede» (dada pelo usuário) × o DWG.** Conferida nas 6
+    portas de abrir do desenho: **em 6 de 6 a folha desenhada fica rente a uma parede
+    perpendicular** — a regra vale como condição. Mas ela **não escolhe sozinha**: na
+    maioria das portas há uma parede em cada lado do vão. Escolher o canto mais colado
+    acertou **4 de 6** (a única porta com uma só parede candidata acertou). Nas 2 que
+    erraram o DWG usou a parede mais longe (0,38 m em vez de 0,23 m; 0,68 m em vez de
+    0,31 m); decidir isso exige saber **qual ambiente a porta serve** (p.ex. abre para
+    dentro do banheiro/quarto), e o protótipo ainda não tem ambientes/zonas. Por isso
+    `door_swing` devolve as alternativas e o chamador pode corrigir porta a porta
+    (`overrides`). Detalhe que custou tempo: o lado `+1` é a *esquerda do eixo* da
+    parede, que muda com a direção em que a parede foi desenhada — comparar «esquerda»
+    entre paredes sem olhar o eixo engana.
 
 ### Peitoril e folha aberta (exemplo sintético)
 

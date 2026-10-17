@@ -1340,3 +1340,60 @@ def test_an_empty_scene_gives_an_empty_plan(vp):
     plan = mod.plan_drawing(vp.scene)
     assert plan["cut"] == [] and len(plan["below"]) == 0 and len(plan["above"]) == 0
     assert mod.render_plan(plan).height() == 200
+
+
+# ---- swing rule: the door opens AGAINST the wall ----------------------------------------
+
+def _room_corner(door_at=(1.0, 1.87), perp_x=0.6, perp_len=3.0, perp_dir=1, level="PB"):
+    """A wall along +x with a door, and a perpendicular wall at ``perp_x``
+    running ``perp_len`` m to +y (perp_dir 1) or -y (-1)."""
+    wall = dict(_w((0, 0), (5, 0), 0.12), level=level,
+                openings=[{"s0": door_at[0], "s1": door_at[1], "sill": 0.0, "head": 2.1}])
+    perp = dict(_w((perp_x, 0), (perp_x, perp_dir * perp_len), 0.12), level=level)
+    return [wall, perp]
+
+
+def test_the_hinge_goes_to_the_corner_side_and_the_leaf_opens_to_the_wall():
+    got = mod.door_swing(_room_corner(), 0, 0)
+    assert got["hinge"] == "a" and got["side"] == 1          # corner is at the start, wall goes +y
+    assert got["wall"] == 1 and got["gap"] == pytest.approx(1.0 - 0.6 - 0.06)
+
+
+def test_the_rule_mirrors_with_the_wall_on_the_other_side():
+    assert mod.door_swing(_room_corner(perp_dir=-1), 0, 0)["side"] == -1
+    recs = _room_corner(perp_x=2.4)                            # corner after the door
+    got = mod.door_swing(recs, 0, 0)
+    assert got["hinge"] == "b" and got["side"] == 1
+
+
+def test_a_wall_too_far_or_too_short_or_alone_gives_no_rule():
+    assert mod.door_swing(_room_corner(perp_x=-0.5), 0, 0) is None   # 1.5 m away
+    assert mod.door_swing(_room_corner(perp_len=0.3), 0, 0) is None  # cannot receive the leaf
+    assert mod.door_swing(_room_corner()[:1], 0, 0) is None          # nothing beside it
+    other_level = _room_corner(level="PB")
+    other_level[1]["level"] = "P1"
+    assert mod.door_swing(other_level, 0, 0) is None
+
+
+def test_two_candidate_walls_are_reported_and_the_nearest_corner_wins():
+    recs = _room_corner() + [dict(_w((2.4, 0), (2.4, -3), 0.12), level="PB")]
+    got = mod.door_swing(recs, 0, 0)
+    assert (got["hinge"], got["side"]) == ("a", 1)             # 0.34 m beats 0.51 m
+    assert [(a["hinge"], a["side"]) for a in got["alternatives"]] == [("b", -1)]
+    assert not got["ambiguous"]
+    even = _room_corner(perp_x=0.6) + [dict(_w((2.27, 0), (2.27, -3), 0.12), level="PB")]
+    assert mod.door_swing(even, 0, 0)["ambiguous"]             # the rule alone cannot decide
+
+
+def test_auto_swing_fills_the_side_and_an_override_still_wins(vp):
+    wall, perp = _room_corner()
+    mod.create_walls(vp, [wall, perp])
+    (lf,) = mod.create_leaves(vp, [g for g in vp.scene.groups
+                                   if mod.wall_record(g)["openings"]], auto_swing=True)
+    rec = mod.element_record(lf)
+    assert (rec["hinge"], rec["side"]) == ("a", 1)
+    (lf2,) = mod.create_leaves(vp, [g for g in vp.scene.groups
+                                    if (mod.element_record(g) or {}).get("openings")],
+                               auto_swing=True,
+                               overrides=lambda w, i, o: {"side": -1})
+    assert mod.element_record(lf2)["side"] == -1 and mod.element_record(lf2)["hinge"] == "a"
