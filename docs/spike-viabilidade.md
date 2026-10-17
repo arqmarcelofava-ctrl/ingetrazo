@@ -312,7 +312,8 @@ repositório.
 | Travessas | `rails: [{z, height}]` na esquadria: peças de montante a montante (1 mm mais rasas por face, para continuarem sólidos fechados); os painéis ficam nos intervalos entre elas. |
 | Peitoril / folha de porta | `kind: "sill"` (laje que sai da face, só nas janelas) e `kind: "leaf"` (folha de porta com `hinge`, `side`, `angle`, folga), criados a partir das `openings` por `create_sills` / `create_leaves` (1 passo, tudo ou nada). Menu «Peitoris (janelas)» e «Folhas de porta». |
 | Porta detalhada | `kind: "leaf"` com `style` `swing` (folha de 35 mm que gira em torno da dobradiça; `frame` = marco com dois batentes rebaixados e travessa; `trim` = guarnição nas duas faces; `arc` = arco de giro como arestas) ou `sliding` (porta de correr de vidro: bastidor de 35 mm, montantes de 50 mm, vidro de 10 mm; `open` 0–1). `create_leaves(..., overrides=f)` dá a cada porta o seu lado, a sua dobradiça e o seu tipo. |
-| Atualizar 3D | `update_3d(viewport, alvos=None)`: regenera paredes, esquadrias, peitoris e portas (seleção, ou todas) de seus registros e dos níveis, **todas num único passo**. |
+| Blocos de biblioteca | `load_block_library(caminho.skp)` abre um `.skp` numa cena à parte e devolve `{nome do componente: grupo}`; `create_blocks(viewport, biblioteca, escolher)` põe uma **instância** do componente em cada abertura (`kind: "block"`: eixo, `s`, `block`, `flip`, `side`, `t_offset`), num passo de desfazer. A instância só ganha uma matriz e **compartilha a malha** do componente (editar o bloco muda todas as portas). Convenção do bloco: origem no centro do vão, no chão e no eixo da parede; +X ao longo da parede; +Y para o lado de abrir; +Z para cima. |
+| Atualizar 3D | `update_3d(viewport, alvos=None)`: regenera paredes, esquadrias, peitoris, portas e blocos (seleção, ou todas) de seus registros e dos níveis, **todas num único passo**. |
 | Editar + atualizar | `edit_walls(viewport, alvos, **parametros)`: 1 passo, desfaz parâmetros e geometria. |
 | Navegador | `add_outliner_kind` rotula a parede ("Parede", nível, espessura, altura). |
 
@@ -475,6 +476,29 @@ Achados que valem para qualquer planta importada:
     desenha abertas a 90°; o arco mostra o giro) e os blocos de correr mostram a
     folha parcialmente aberta — ficou fechada (`open` 0) para ser coerente.
 
+13. **Blocos de biblioteca (componentes do SketchUp) nas aberturas.** O IngeTrazo
+    já importa componente do `.skp` como **protótipo compartilhado + uma instância por
+    colocação** (`formats/skp.py`, "Components v1"), com nome e etiqueta preservados.
+    O plugin usa isso: lê a biblioteca, escolhe o componente de cada abertura, calcula
+    a matriz (eixo da parede, espelhamento `flip`/`side`) e põe a instância. Provado
+    com uma biblioteca de teste de 4 componentes exportada para `.skp` e relida
+    (`formats/skp_out.py` → `formats/skp.py`): **8 blocos postos nas 8 aberturas do
+    modelo real**, com a posição conferida contra a porta construída direto pelos
+    mesmos parâmetros (maior diferença **0,1 mm**), 4 malhas para 8 portas
+    (compartilhadas), um passo de desfazer, salvos e reabertos do `.igz`.
+    **Dois limites reais:**
+    (a) **linhas soltas do componente não entram.** O importador de `.skp` lê faces
+    (e as marcas de aresta suave), não arestas que não fecham face — que é como muito
+    símbolo 2D de planta (arco de giro, traços) é desenhado no SketchUp. Na prova, o
+    arco de giro (24 arestas) sumiu na ida e volta pelo `.skp`. Saídas sem mexer no
+    núcleo: desenhar o símbolo 2D com **faces** (tiras finas), ou trazê-lo por
+    DXF; a saída boa é o núcleo importar arestas soltas de componentes (item novo em
+    3.1).
+    (b) o bloco tem **tamanho fixo**; o vão detectado no DWG nem sempre é do tamanho
+    da porta (no teste: vãos de 1,13 m e 0,90 m para portas de 0,87 m). O certo é
+    recortar o vão **do tamanho do bloco**, centrado na porta do DWG — a escolha do
+    bloco vem do **nome** do bloco do DWG, não da largura do vão.
+
 ### Peitoril e folha aberta (exemplo sintético)
 
 ![Peitoril e folha](images/bim_proto_peitoril_folha.png)
@@ -531,6 +555,10 @@ Separado por quanto dói não mudar. "Contorno" = o que dá para fazer hoje, com
    copiar). Alternativa dentro das extensões: contêiner com pose, como o
    Windowizer (P5). Se o produto precisar de grupos clássicos, o núcleo teria
    de avisar a extensão.
+3. **Importar arestas soltas dos componentes do `.skp`** (`formats/skp.py` /
+   `formats/skp_openskp.py` só lêem faces e marcas de aresta suave). Sem isso, o
+   símbolo 2D de um bloco de biblioteca feito de linhas (arco de giro, traços de
+   planta) não chega; contorno: refazer o 2D com faces finas ou trazer por DXF.
 
 ### 3.2 Para tirar o `FRAGILE` (contorno existe)
 

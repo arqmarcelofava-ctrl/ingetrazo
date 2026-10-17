@@ -36,6 +36,7 @@ from core import bim
 from core.group import Group
 from core.history import Command
 from core.mesh import Mesh
+from core.scene import Scene
 from tools.base import AxisMagnet, Tool, ToolContext
 
 KEY = "bim_proto"
@@ -76,6 +77,7 @@ _TEXTS = {
         "Join corners": "Unir cantos",
         "Sill": "Peitoril", "Door leaf": "Folha de porta",
         "Sills": "Peitoris (janelas)", "Door leaves": "Folhas de porta",
+        "Block": "Bloco",
         "Frame": "Esquadria", "Railing": "Guarda-corpo",
         "{n} wall(s) joined": "{n} parede(s) unida(s)",
         "No wall corners to join.": "Não há cantos de parede para unir.",
@@ -312,7 +314,7 @@ def build_wall_group(scene, rec: dict, name: str | None = None) -> Group:
 
 def _next_name(scene, what: str = "Wall") -> str:
     kind = {"Wall": "wall", "Frame": "frame", "Railing": "frame",
-            "Sill": "sill", "Door leaf": "leaf"}[what]
+            "Sill": "sill", "Door leaf": "leaf", "Block": "block"}[what]
     n = sum(1 for g in scene.groups
             if (element_record(g) or {}).get("kind") == kind) + 1
     taken = {g.name for g in scene.groups}
@@ -788,12 +790,129 @@ def leaf_mesh(rec: dict, base_z: float) -> Mesh:
     return mesh
 
 
+# ---------------------------------------------------------------------------
+# Blocos de biblioteca: um componente (p.ex. do SketchUp) posto numa abertura
+# ---------------------------------------------------------------------------
+# Convenção do bloco (a mesma que um desenhista segue ao modelar o componente):
+# a ORIGEM do componente é o centro do vão, no chão e no eixo da parede; +X corre
+# ao longo da parede, +Y é o lado para onde a porta abre (ou a face de fora da
+# janela), +Z para cima. Cada instância SÓ ganha uma matriz; a malha é a do
+# componente (compartilhada), então editar o bloco atualiza todas as portas.
+
+def load_block_library(path) -> dict:
+    """Abre ``path`` (.skp, .igz…) numa cena à parte e devolve ``{nome:
+    grupo}`` com um componente por nome. O nome do componente é a chave que
+    ``create_blocks`` usa para escolher o bloco certo para cada abertura."""
+    from pathlib import Path
+    path = Path(path)
+    scene = Scene()
+    if path.suffix.lower() == ".skp":
+        from formats import skp
+        skp.load_skp(scene, path)
+    else:
+        from formats import igz
+        igz.load_into(scene, path)
+    return {g.name: g for g in scene.groups if g.is_component()}
+
+
+def normalize_block(rec: dict) -> dict:
+    """Registro de um bloco posto numa abertura: eixo da parede ``a``→``b``,
+    ``s`` (centro do vão ao longo do eixo), ``block`` (nome do componente),
+    ``flip`` (espelha ao longo da parede: troca o lado da dobradiça), ``side``
+    (+1 ou −1: espelha a profundidade, troca o lado de abrir), ``t_offset`` e
+    ``ifc`` (classe IFC do grupo)."""
+    try:
+        out = _common(rec, {
+            "kind": "block", "block": str(rec["block"]),
+            "s": float(rec["s"]), "flip": bool(rec.get("flip", False)),
+            "side": int(rec.get("side", 1)),
+            "t_offset": float(rec.get("t_offset", 0.0)),
+            "ifc": str(rec.get("ifc", "IfcDoor")),
+        })
+    except (KeyError, TypeError, ValueError) as exc:
+        raise BimProtoError(f"bad block record: {exc}") from exc
+    _, _, _, length = _axis_frame(out)
+    if not all(math.isfinite(v) for v in out["a"] + out["b"] + [
+            out["s"], out["t_offset"], out["base_offset"]]):
+        raise BimProtoError("non-finite value in the block record")
+    if out["side"] not in (-1, 1) or out["ifc"] not in bim.IFC_CLASSES:
+        raise BimProtoError("side must be 1 or -1 and ifc a known IFC class")
+    if not -_EPS <= out["s"] <= length + _EPS:
+        raise BimProtoError("the block must lie inside the wall's length")
+    return out
+
+
+def block_placement(rec: dict, base_z: float):
+    """Matriz (componente → mundo) de um bloco, pela convenção acima."""
+    from PySide6.QtGui import QMatrix4x4
+    origin, u, n, _ = _axis_frame(rec)
+    fx = -1.0 if rec["flip"] else 1.0
+    fy = float(rec["side"])
+    cx = origin[0] + u[0] * rec["s"] + n[0] * rec["t_offset"]
+    cy = origin[1] + u[1] * rec["s"] + n[1] * rec["t_offset"]
+    return QMatrix4x4(u[0] * fx, n[0] * fy, 0, cx,
+                      u[1] * fx, n[1] * fy, 0, cy,
+                      0, 0, 1, base_z,
+                      0, 0, 0, 1)
+
+
+def _place_block(scene, rec: dict, library: dict) -> Group:
+    rec = normalize_block(rec)
+    proto = library.get(rec["block"])
+    if proto is None:
+        raise BimProtoError(f"the library has no block {rec['block']!r}")
+    # FRAGILE: copy_group é público mas fora do contrato documentado; é o que o
+    # Copiar/Colar do núcleo usa e faz a cópia COMPARTILHAR a malha do componente.
+    from core.group import copy_group
+    g = copy_group(proto)
+    g.name = _next_name(scene, "Block")
+    g.xform = block_placement(rec, level_z(scene, rec["level"])
+                              + rec["base_offset"])
+    g.layer = None
+    bim.tag_group(g, rec["ifc"], g.name)
+    g.ext = {KEY: rec}
+    return g
+
+
+def create_blocks(viewport, library: dict, choose, targets=None) -> list:
+    """Põe um bloco da ``library`` em cada abertura das paredes ``targets`` (ou
+    de todas) — UM passo de desfazer, tudo ou nada. ``choose(parede, índice,
+    abertura)`` devolve ``None`` (pular) ou um dict com ``block`` (nome do
+    componente) e, se quiser, ``flip``, ``side``, ``t_offset``, ``ifc``."""
+    scene = viewport.scene
+    todo = [g for g in (targets if targets is not None else walls(scene))
+            if wall_record(g) is not None]
+    jobs = []
+    for g in todo:
+        w = wall_record(g)
+        for idx, o in enumerate(w.get("openings") or []):
+            pick = choose(w, idx, o)
+            if pick:
+                jobs.append(dict(pick, a=w["a"], b=w["b"], s=(o["s0"] + o["s1"]) / 2,
+                                 level=w["level"],
+                                 base_offset=w.get("base_offset", 0.0),
+                                 ifc=pick.get("ifc", "IfcWindow" if o["sill"] > _EPS
+                                              else "IfcDoor")))
+    if not jobs:
+        return []
+    made: list = []
+
+    def mutate(sc):
+        for rec in jobs:
+            g = _place_block(sc, rec, library)
+            sc.groups.append(g)
+            made.append(g)
+
+    return made if _run(viewport, mutate) else []
+
+
 #: kind -> (normalizar, malha, classe IFC, nome no menu)
 _KINDS = {
     "wall": (normalize_record, wall_mesh, "IfcWall", "Wall"),
     "frame": (normalize_frame, frame_mesh, None, "Frame"),
     "sill": (normalize_sill, sill_mesh, "IfcMember", "Sill"),
     "leaf": (normalize_leaf, leaf_mesh, "IfcDoor", "Door leaf"),
+    "block": (normalize_block, None, None, "Block"),
 }
 
 
@@ -819,6 +938,11 @@ def regenerate_element(scene, group) -> None:
         raise BimProtoError(f"«{group.name}» is not a BIM proto element")
     norm, mesh_of, _ifc, _label = _KINDS[rec["kind"]]
     rec = norm(rec)
+    if mesh_of is None:                    # bloco: a malha é a do componente
+        group.xform = block_placement(rec, level_z(scene, rec["level"])
+                                      + rec["base_offset"])
+        group.ext = dict(group.ext or {}, **{KEY: rec})
+        return
     group.mesh = mesh_of(rec, level_z(scene, rec["level"]) + rec["base_offset"])
     group.xform = None        # FRAGILE: troca de malha, como em regenerate_wall
     group.children = []
@@ -1528,7 +1652,7 @@ def project_tree_model(scene) -> list:
         by_level.setdefault(element_record(g).get("level"), []).append(g)
     levels = []
     for lv in sorted(data["levels"], key=lambda v: float(v.get("z", 0))):
-        kids = [(g.name if element_record(g)["kind"] in ("sill", "leaf") else
+        kids = [(g.name if element_record(g)["kind"] in ("sill", "leaf", "block") else
                  f"{g.name} — {_len(element_record(g)):.2f} m", [])
                 for g in by_level.get(lv.get("id"), [])]
         levels.append((f"{lv.get('name', lv.get('id'))}  (+{float(lv['z']):.2f} m)",
@@ -1603,6 +1727,9 @@ def _outliner_kind(group):
             ("Mullions", str(len(rec["divisions"]))),
             ("Height", f"{rec['height']:.2f} m")]}
     rec = element_record(group)
+    if rec is not None and rec["kind"] == "block":
+        return {"type": _t("Block"), "props": [
+            ("Level", rec["level"]), ("Block", rec["block"])]}
     if rec is not None and rec["kind"] in ("sill", "leaf"):
         return {"type": _t(_KINDS[rec["kind"]][3]), "props": [
             ("Level", rec["level"]),

@@ -1187,3 +1187,98 @@ def test_detailed_doors_survive_save_reopen_and_update_3d(vp, tmp_path):
     rec = mod.element_record(back)
     assert rec["frame"] and rec["trim"] and rec["arc"] and rec["jamb_width"] == 0.035
     assert _volume(back) == pytest.approx(_volume(d), rel=1e-4)
+
+
+# ---- library blocks (SketchUp-style components) placed on the openings ------------------
+
+def _block_library(tmp_path, suffix=".igz"):
+    """A one-component library: a small asymmetric box (x 0..0.3, y 0..0.1, z 0..2)
+    named «PORTA_80», so orientation mistakes show up."""
+    from PySide6.QtGui import QMatrix4x4
+    from core.group import Group
+    mesh = mod.Mesh()
+    mod._add_box(mesh, (0, 0), (1, 0), (0, 1), 0.0, 0.3, 0.0, 0.1, 0.0, 2.0)
+    g = Group(mesh, name="PORTA_80")
+    g.xform = QMatrix4x4()                       # a component instance
+    sc = Scene()
+    sc.groups.append(g)
+    path = tmp_path / f"lib{suffix}"
+    if suffix == ".skp":
+        from formats import skp_out
+        skp_out.save_skp(sc, path)
+    else:
+        igz.save_scene(sc, path)
+    return mod.load_block_library(path)
+
+
+def _world_bbox(group):
+    from core.group import world_mesh
+    pts = [v.position for v in world_mesh(group).vertices]
+    return (min(p.x() for p in pts), min(p.y() for p in pts), min(p.z() for p in pts),
+            max(p.x() for p in pts), max(p.y() for p in pts), max(p.z() for p in pts))
+
+
+def _one_door(vp, a=(0, 0), b=(4, 0)):
+    return mod.create_walls(vp, [{"a": list(a), "b": list(b), "thickness": 0.12,
+                                  "openings": [{"s0": 1.5, "s1": 2.5, "sill": 0.0,
+                                                "head": 2.1}]}])[0]
+
+
+@pytest.mark.parametrize("suffix", [".igz", ".skp"])
+def test_the_library_comes_back_by_component_name(tmp_path, suffix):
+    lib = _block_library(tmp_path, suffix)
+    assert list(lib) == ["PORTA_80"] and len(lib["PORTA_80"].mesh.faces) == 6
+
+
+def test_a_block_lands_on_the_opening_by_the_convention(vp, tmp_path):
+    lib = _block_library(tmp_path)
+    _one_door(vp)
+    (b,) = mod.create_blocks(vp, lib, lambda w, i, o: {"block": "PORTA_80"})
+    # origin at the opening centre (s = 2), +X along the wall, +Y to the left of it
+    assert _world_bbox(b) == pytest.approx((2.0, 0.0, 0.0, 2.3, 0.1, 2.0))
+    assert b.ifc["class"] == "IfcDoor" and b.name.startswith("Block")
+    assert b.mesh is lib["PORTA_80"].mesh        # shared: edit the block, edit all doors
+
+
+def test_flip_and_side_mirror_the_block(vp, tmp_path):
+    lib = _block_library(tmp_path)
+    _one_door(vp)
+    (b,) = mod.create_blocks(vp, lib, lambda w, i, o: {"block": "PORTA_80",
+                                                       "flip": True, "side": -1})
+    assert _world_bbox(b) == pytest.approx((1.7, -0.1, 0.0, 2.0, 0.0, 2.0))
+
+
+def test_a_block_follows_a_wall_that_is_not_along_x(vp, tmp_path):
+    lib = _block_library(tmp_path)
+    _one_door(vp, a=(0, 0), b=(0, 4))            # runs along +Y: left of it is -X
+    (b,) = mod.create_blocks(vp, lib, lambda w, i, o: {"block": "PORTA_80"})
+    assert _world_bbox(b) == pytest.approx((-0.1, 2.0, 0.0, 0.0, 2.3, 2.0))
+
+
+def test_blocks_are_one_undo_step_and_a_missing_block_changes_nothing(vp, tmp_path):
+    lib = _block_library(tmp_path)
+    _one_door(vp)
+    n, steps = len(vp.scene.groups), len(vp.history.undo_stack)
+    assert mod.create_blocks(vp, lib, lambda w, i, o: {"block": "NAO_EXISTE"}) == []
+    assert len(vp.scene.groups) == n and len(vp.history.undo_stack) == steps
+    (b,) = mod.create_blocks(vp, lib, lambda w, i, o: {"block": "PORTA_80"})
+    assert len(vp.history.undo_stack) == steps + 1
+    vp.history.undo()
+    assert b not in vp.scene.groups
+
+
+def test_update_3d_puts_a_moved_block_back_and_blocks_survive_reopening(vp, tmp_path):
+    from PySide6.QtGui import QMatrix4x4
+    lib = _block_library(tmp_path)
+    _one_door(vp)
+    (b,) = mod.create_blocks(vp, lib, lambda w, i, o: {"block": "PORTA_80"})
+    good = _world_bbox(b)
+    b.xform = QMatrix4x4()                        # someone moved it
+    assert mod.update_3d(vp, [b]) == 1
+    assert _world_bbox(b) == pytest.approx(good)
+    igz.save_scene(vp.scene, tmp_path / "b.igz")
+    sc = Scene()
+    igz.load_into(sc, tmp_path / "b.igz")
+    back = [g for g in sc.groups if (mod.element_record(g) or {}).get("kind") == "block"][0]
+    assert mod.element_record(back)["block"] == "PORTA_80"
+    assert _world_bbox(back) == pytest.approx(good)

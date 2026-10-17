@@ -33,8 +33,8 @@ GPL-3.0); **nenhum dado real de cliente no repositório**.
 | O quê | Onde |
 |---|---|
 | Resposta às 6 perguntas de viabilidade, tabela, o que exigiria mudar o núcleo, o que ficou sem verificar | `docs/spike-viabilidade.md` |
-| Protótipo: ferramenta de parede por dois pontos, parâmetros em `group.ext`, níveis em `plugin_data`, **Atualizar 3D** num passo de desfazer, painel «Project» (árvore), importar planta (`wall_from_rectangle`), criação em lote (`create_walls`), vãos de porta (`wall_gaps`), **aberturas de verdade nas paredes** (`openings`, `merge_gap_walls`), **união de cantos** em L/T (`join_walls`, `join_corners`) **esquadrias** de fachada e guarda-corpo com travessas (`kind: "frame"`, `create_frames`), **peitoris** (`create_sills`) e **folhas de porta** (`create_leaves`) | `plugins/bim_proto.py` |
-| Testes (135, todos passam) | `tests/test_bim_proto.py`, `tests/test_spike_viabilidade.py` |
+| Protótipo: ferramenta de parede por dois pontos, parâmetros em `group.ext`, níveis em `plugin_data`, **Atualizar 3D** num passo de desfazer, painel «Project» (árvore), importar planta (`wall_from_rectangle`), criação em lote (`create_walls`), vãos de porta (`wall_gaps`), **aberturas de verdade nas paredes** (`openings`, `merge_gap_walls`), **união de cantos** em L/T (`join_walls`, `join_corners`) **esquadrias** de fachada e guarda-corpo com travessas (`kind: "frame"`, `create_frames`), **peitoris** (`create_sills`), **folhas de porta** (`create_leaves`) e **blocos de biblioteca** do SketchUp postos nas aberturas (`load_block_library`, `create_blocks`) | `plugins/bim_proto.py` |
+| Testes (142, todos passam) | `tests/test_bim_proto.py`, `tests/test_spike_viabilidade.py` |
 | Inspeciona qualquer modelo (.igz .glb .skp .dae .obj .stl .dxf .dwg) e desenha planta cortada, frente e axonometria **sem placa de vídeo** | `scripts/inspecionar_modelo.py` |
 | Imagens de exemplo (paredes de teste, janela com o painel) | `docs/images/` |
 
@@ -83,7 +83,9 @@ qualquer planta importada:
    Portas: 8 detalhadas como no DWG (marco com rebaixo, guarnição, folha de 35 mm,
    arco de giro; 2 de correr de vidro), com lado e dobradiça lidos do arco do bloco;
    ficam fechadas. 6 das 14 portas do DWG (corta-fogo, shafts, 2 de abrir) não têm
-   abertura no modelo. ATENÇÃO: coordenadas do modelo = DWG − (2,2972; −0,0131). Peitoris: o DWG
+   abertura no modelo. Blocos do SketchUp: convenção (origem no centro do vão, +X ao longo da
+   parede, +Y lado de abrir, +Z cima) e limite: o `.skp` importa só FACES (linhas soltas do
+   símbolo 2D se perdem). Pedir ao usuário 1 `.skp` pequeno com 2–3 blocos reais. ATENÇÃO: coordenadas do modelo = DWG − (2,2972; −0,0131). Peitoris: o DWG
    não tem janela em parede, então só foram testados com exemplo sintético.
 
 Armadilhas de **desenho** (custaram tempo):
