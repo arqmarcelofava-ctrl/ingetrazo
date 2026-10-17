@@ -1408,15 +1408,31 @@ def plan_drawing(scene, cut_z: float = 1.2, *, tol: float = 0.005) -> dict:
             "above": np.asarray(proj, float).reshape(-1, 4)}
 
 
+#: Estilos da planta 2D. Larguras e tracejado em PONTOS de papel. ``"ao"`` foi MEDIDO
+#: no vetor de um PDF de layout de escritório (poché preto cheio e sem contorno; mobília
+#: e portas em linha fina cinza de 0,48 pt; projeções em tracejado preto de 0,48 pt, traço
+#: de 9,8 pt e vão de 4,3 pt); ``"cad"`` é o cinza-azulado com projeção laranja.
+PLAN_STYLES = {
+    "ao": {"cut_fill": "#000000", "cut_edge": None,
+           "below": ("#989898", 0.48), "above": ("#000000", 0.48),
+           "dash": (9.8, 4.3), "lines_under_cut": True},
+    "cad": {"cut_fill": "#3a3f48", "cut_edge": None,
+            "below": ("#222222", 0.5), "above": ("#b04a00", 0.6),
+            "dash": (6.0, 4.0), "lines_under_cut": False},
+}
+
+
 def render_plan(plan: dict, width: int = 1600, margin: int = 40, title: str = "",
-                legend: bool = True):
-    """Desenha o resultado de :func:`plan_drawing` numa ``QImage`` — poché cinza,
-    linha fina para o que está abaixo do corte e TRACEJADO para a projeção do que
-    está acima, como na planta do AutoCAD. Sem janela e sem GL."""
+                legend: bool = True, style: str = "ao", px_per_pt: float = 2.0):
+    """Desenha o resultado de :func:`plan_drawing` numa ``QImage`` — poché, linha fina
+    para o que está abaixo do corte e TRACEJADO para a projeção do que está acima,
+    como na planta do AutoCAD. ``style``: chave de :data:`PLAN_STYLES` (``"ao"`` por
+    padrão); ``px_per_pt`` converte os pontos do estilo em pixels. Sem janela e sem GL."""
     import numpy as np
     from PySide6.QtCore import QPointF, Qt
     from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPolygonF
 
+    st = PLAN_STYLES[style]
     pts = [lp for lp in plan["cut"]]
     for key in ("below", "above"):
         if len(plan[key]):
@@ -1443,16 +1459,36 @@ def render_plan(plan: dict, width: int = 1600, margin: int = 40, title: str = ""
     def Y(y):
         return height - margin - foot + 20 - (y - y0) * k
 
-    p.setPen(Qt.NoPen)
-    p.setBrush(QColor("#3a3f48"))
-    for lp in plan["cut"]:
-        p.drawPolygon(QPolygonF([QPointF(X(a), Y(b)) for a, b in lp]))
-    p.setPen(QPen(QColor("#222"), 0.9))
-    for a, b, c, d in plan["below"]:
-        p.drawLine(QPointF(X(a), Y(b)), QPointF(X(c), Y(d)))
-    dash = QPen(QColor("#b04a00"), 1.1, Qt.CustomDashLine)
-    dash.setDashPattern([6, 4])
-    p.setPen(dash)
+    def pen(spec, dashed=False):
+        colour, pt = spec
+        w = max(pt * px_per_pt, 0.6)
+        q = QPen(QColor(colour), w, Qt.CustomDashLine if dashed else Qt.SolidLine)
+        if dashed:                      # o Qt mede o tracejado em larguras da caneta
+            q.setDashPattern([st["dash"][0] * px_per_pt / w, st["dash"][1] * px_per_pt / w])
+        q.setCapStyle(Qt.FlatCap)
+        return q
+
+    def poche():
+        if st["cut_edge"]:
+            p.setPen(QPen(QColor(st["cut_edge"]), 1.0))
+        else:
+            p.setPen(Qt.NoPen)
+        p.setBrush(QColor(st["cut_fill"]))
+        for lp in plan["cut"]:
+            p.drawPolygon(QPolygonF([QPointF(X(a), Y(b)) for a, b in lp]))
+
+    def below():
+        p.setPen(pen(st["below"]))
+        for a, b, c, d in plan["below"]:
+            p.drawLine(QPointF(X(a), Y(b)), QPointF(X(c), Y(d)))
+
+    if st["lines_under_cut"]:
+        below()
+        poche()
+    else:
+        poche()
+        below()
+    p.setPen(pen(st["above"], dashed=True))
     for a, b, c, d in plan["above"]:
         p.drawLine(QPointF(X(a), Y(b)), QPointF(X(c), Y(d)))
     p.setFont(QFont("DejaVu Sans", 12))
@@ -1461,18 +1497,17 @@ def render_plan(plan: dict, width: int = 1600, margin: int = 40, title: str = ""
         p.drawText(14, 24, title)
     if legend:
         ly = height - 22
-        p.setBrush(QColor("#3a3f48"))
+        p.setBrush(QColor(st["cut_fill"]))
         p.setPen(Qt.NoPen)
         p.drawRect(14, ly - 10, 26, 12)
         p.setPen(QColor("#222"))
         p.drawText(48, ly, _t("cut"))
-        p.setPen(QPen(QColor("#222"), 1.2))
+        lw = pen((st["below"][0], max(st["below"][1], 0.8)))
+        p.setPen(lw)
         p.drawLine(190, ly - 4, 226, ly - 4)
         p.setPen(QColor("#222"))
         p.drawText(234, ly, _t("below the cut"))
-        dash2 = QPen(QColor("#b04a00"), 1.4, Qt.CustomDashLine)
-        dash2.setDashPattern([5, 3])
-        p.setPen(dash2)
+        p.setPen(pen((st["above"][0], max(st["above"][1], 0.8)), dashed=True))
         p.drawLine(430, ly - 4, 480, ly - 4)
         p.setPen(QColor("#222"))
         p.drawText(488, ly, _t("projection (above the cut)"))

@@ -1326,14 +1326,42 @@ def test_a_beam_above_the_cut_is_projected_and_a_sill_below_it_is_not(vp):
     assert any(5.95 <= min(s[0], s[2]) <= 7.05 and 2.95 <= s[1] <= 3.35 for s in plan["below"])
 
 
-def test_the_plan_renders_with_a_dashed_projection(vp):
+def _colours(img, step=2):
+    return {img.pixelColor(x, y).name() for x in range(0, img.width(), step)
+            for y in range(0, img.height(), step)}
+
+
+def test_the_plan_renders_in_the_office_standard_by_default(vp):
     _wall_with(vp, [{"s0": 1.5, "s1": 2.5, "sill": 0.0, "head": 2.1}], length=4.0)
-    img = mod.render_plan(mod.plan_drawing(vp.scene, 1.2), width=800, title="t")
+    plan = mod.plan_drawing(vp.scene, 1.2)
+    img = mod.render_plan(plan, width=800, title="t")
     assert img.width() == 800 and img.height() > 100
-    colours = {img.pixelColor(x, y).name() for x in range(0, 800, 2)
-               for y in range(0, img.height(), 2)}
-    assert "#3a3f48" in colours                       # poché
-    assert any(c.startswith("#b0") or c.startswith("#c") for c in colours)  # dashed ink
+    colours = _colours(img)
+    assert "#000000" in colours                       # solid black poche, as in the PDF
+    assert "#3a3f48" not in colours
+    # the projection is dashed: along a row inside the opening the black runs have gaps
+    dark = [[img.pixelColor(x, y).red() < 90 for x in range(img.width())]
+            for y in range(img.height())]
+    gappy = False
+    for row in dark:
+        runs = sum(1 for a, b in zip(row, row[1:]) if b and not a)
+        if 3 <= runs <= 60 and sum(row) < img.width() * 0.5:
+            gappy = True
+    assert gappy
+
+
+def test_the_cad_style_keeps_the_blue_grey_poche_and_orange_projection(vp):
+    _wall_with(vp, [{"s0": 1.5, "s1": 2.5, "sill": 0.0, "head": 2.1}], length=4.0)
+    img = mod.render_plan(mod.plan_drawing(vp.scene, 1.2), width=800, style="cad")
+    colours = _colours(img)
+    assert "#3a3f48" in colours
+    assert any(c.startswith("#b0") or c.startswith("#c") for c in colours)
+
+
+def test_the_office_style_numbers_are_the_measured_ones():
+    st = mod.PLAN_STYLES["ao"]
+    assert st["dash"] == (9.8, 4.3) and st["below"] == ("#989898", 0.48)
+    assert st["above"] == ("#000000", 0.48) and st["cut_fill"] == "#000000"
 
 
 def test_an_empty_scene_gives_an_empty_plan(vp):

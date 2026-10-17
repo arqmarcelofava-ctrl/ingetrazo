@@ -313,7 +313,7 @@ repositório.
 | Peitoril / folha de porta | `kind: "sill"` (laje que sai da face, só nas janelas) e `kind: "leaf"` (folha de porta com `hinge`, `side`, `angle`, folga), criados a partir das `openings` por `create_sills` / `create_leaves` (1 passo, tudo ou nada). Menu «Peitoris (janelas)» e «Folhas de porta». |
 | Porta detalhada | `kind: "leaf"` com `style` `swing` (folha de 35 mm que gira em torno da dobradiça; `frame` = marco com dois batentes rebaixados e travessa; `trim` = guarnição nas duas faces; `arc` = arco de giro como arestas) ou `sliding` (porta de correr de vidro: bastidor de 35 mm, montantes de 50 mm, vidro de 10 mm; `open` 0–1). `create_leaves(..., overrides=f)` dá a cada porta o seu lado, a sua dobradiça e o seu tipo. |
 | Blocos de biblioteca | `load_block_library(caminho.skp)` abre um `.skp` numa cena à parte e devolve `{nome do componente: grupo}`; `create_blocks(viewport, biblioteca, escolher)` põe uma **instância** do componente em cada abertura (`kind: "block"`: eixo, `s`, `block`, `flip`, `side`, `t_offset`), num passo de desfazer. A instância só ganha uma matriz e **compartilha a malha** do componente (editar o bloco muda todas as portas). Convenção do bloco: origem no centro do vão, no chão e no eixo da parede; +X ao longo da parede; +Y para o lado de abrir; +Z para cima. |
-| Planta 2D com projeções | `plan_drawing(cena, corte=1.2)` devolve `cut` (anéis do poché), `below` (linhas do que está abaixo do corte) e `above` (a **projeção** do que está acima: verga sobre a porta, viga, armário alto…, só o que não coincide com o corte nem com o que está abaixo); `render_plan(plano)` pinta numa `QImage` com poché, linha fina e **tracejado**, como no AutoCAD. Dois passes do `core.hlr` (plano de corte normal para cima e para baixo), sem GL; a cena não é alterada. |
+| Planta 2D com projeções | `plan_drawing(cena, corte=1.2)` devolve `cut` (anéis do poché), `below` (linhas do que está abaixo do corte) e `above` (a **projeção** do que está acima: verga sobre a porta, viga, armário alto…, só o que não coincide com o corte nem com o que está abaixo); `render_plan(plano, style="ao"|"cad")` pinta numa `QImage` com poché, linha fina e **tracejado**, como no AutoCAD; o estilo `ao` segue o padrão MEDIDO de um PDF de layout do escritório (ver item 16). Dois passes do `core.hlr` (plano de corte normal para cima e para baixo), sem GL; a cena não é alterada. |
 | Giro da porta | `door_swing(registros, parede, abertura)`: regra «a porta SEMPRE abre para a parede» — dobradiça no lado do canto, folha aberta a 90° rente à parede perpendicular (até 1 m do batente, com comprimento para receber a folha). Devolve dobradiça, lado, folga, e as `alternatives` (outras paredes que também recebem a folha); `ambiguous` quando a regra sozinha não decide. `create_leaves(auto_swing=True)` aplica; `overrides` manda por cima. |
 | Atualizar 3D | `update_3d(viewport, alvos=None)`: regenera paredes, esquadrias, peitoris, portas e blocos (seleção, ou todas) de seus registros e dos níveis, **todas num único passo**. |
 | Editar + atualizar | `edit_walls(viewport, alvos, **parametros)`: 1 passo, desfaz parâmetros e geometria. |
@@ -527,6 +527,22 @@ Achados que valem para qualquer planta importada:
     (`overrides`). Detalhe que custou tempo: o lado `+1` é a *esquerda do eixo* da
     parede, que muda com a direção em que a parede foi desenhada — comparar «esquerda»
     entre paredes sem olhar o eixo engana.
+
+16. **Padrão gráfico de planta do escritório (medido de um PDF de layout).** O PDF é
+    vetorial (47 páginas, InDesign); medi as páginas de planta (30 a 42) por imagem
+    ampliada e pelo vetor da página 31: **parede cortada = poché preto cheio, sem
+    contorno**; **mobília, portas (folha + arco), esquadrias = linha fina de 0,48 pt em
+    cinza `#989898`**; ripas do piso e azulejos em cinza mais claro (`#dbdbdb`, 0,48 pt);
+    **projeções = tracejado preto, 0,48 pt, traço de 9,8 pt e vão de 4,3 pt** (marcenaria
+    alta, balcão, degraus acima do corte, vigas); escada em cinza cheio (`#bbbbbb`) com
+    linha de quebra em zigue-zague; elementos a demolir/atenção em tracejado vermelho;
+    destaques em círculos com letra. Os traços do tracejado vêm separados no PDF (o
+    vetor não tem `dasharray`), por isso a medida saiu da contagem de pixels de uma
+    linha. `render_plan(..., style="ao")` aplica poché preto, linha cinza e tracejado
+    nessas medidas (`PLAN_STYLES["ao"]`); o estilo antigo continua em `"cad"`. **Não
+    entram ainda:** hachura/ripas de piso, escada com linha de quebra, círculos de
+    destaque, tracejado vermelho de demolição, e o texto/cotas. O PDF é de **outro
+    apartamento** (e tem nome de cliente): não foi copiado para o repositório.
 
 ### Peitoril e folha aberta (exemplo sintético)
 
