@@ -127,7 +127,7 @@ def test_the_parameters_live_in_group_ext(vp):
     rec = g.ext[mod.KEY]
     assert rec == {"kind": "wall", "a": [0, 0], "b": [4, 0],
                    "thickness": 0.2, "height": 3.0, "level": "PB",
-                   "base_offset": 0.0}
+                   "base_offset": 0.0, "openings": []}
     # the project level is in the document's plugin data, too
     assert vp.scene.plugin_data[mod.KEY]["levels"][0]["id"] == "PB"
 
@@ -571,3 +571,148 @@ def test_a_stub_shorter_than_a_wall_does_not_make_an_opening():
     stub = [_w((0, 0), (2, 0)), _w((2.9, 0), (3.0, 0))]       # 10 cm piece
     assert mod.wall_gaps(stub) == []
     assert len(mod.wall_gaps(stub, min_piece=0.05)) == 1
+
+
+# ---- walls with real openings -----------------------------------------------------------
+
+def _wall_with(vp, openings, length=6.0, height=2.8, thick=0.2):
+    g = mod.create_walls(vp, [{"a": [0, 0], "b": [length, 0], "thickness": thick,
+                               "openings": openings}], height=height)
+    return g[0]
+
+
+def test_a_door_is_a_notch_and_the_wall_stays_a_closed_solid(vp):
+    g = _wall_with(vp, [{"s0": 2.0, "s1": 2.9, "head": 2.1}])
+    expected = (6.0 * 2.8 - 0.9 * 2.1) * 0.2
+    assert _volume(g) == pytest.approx(expected, rel=1e-4)         # watertight
+    xs = [v.position.x() for v in g.mesh.vertices]
+    assert min(xs) == pytest.approx(0) and max(xs) == pytest.approx(6.0)
+
+
+def test_a_window_is_a_hole_with_its_own_reveals(vp):
+    g = _wall_with(vp, [{"s0": 1.0, "s1": 2.5, "sill": 0.9, "head": 2.1}])
+    expected = (6.0 * 2.8 - 1.5 * 1.2) * 0.2
+    assert _volume(g) == pytest.approx(expected, rel=1e-4)
+    assert any(f.hole_loops for f in g.mesh.faces)                 # real holes
+
+
+def test_several_openings_in_one_wall(vp):
+    ops = [{"s0": 0.5, "s1": 1.4, "head": 2.1},
+           {"s0": 2.0, "s1": 3.2, "sill": 1.0, "head": 2.2},
+           {"s0": 4.0, "s1": 4.8, "head": 2.1}]
+    g = _wall_with(vp, ops)
+    expected = (6.0 * 2.8 - 0.9 * 2.1 - 1.2 * 1.2 - 0.8 * 2.1) * 0.2
+    assert _volume(g) == pytest.approx(expected, rel=1e-4)
+
+
+def test_a_wall_with_openings_on_a_diagonal_and_a_raised_base(vp):
+    vp.scene.plugin_data[mod.KEY] = {"levels": [{"id": "PB", "name": "PB", "z": 1.0}]}
+    g = mod.create_walls(vp, [{"a": [0, 0], "b": [3, 4], "thickness": 0.15,
+                               "openings": [{"s0": 1.0, "s1": 2.0, "head": 2.1}]}],
+                         height=2.8)[0]
+    assert _volume(g) == pytest.approx((5.0 * 2.8 - 1.0 * 2.1) * 0.15, rel=1e-4)
+    zs = [v.position.z() for v in g.mesh.vertices]
+    assert (min(zs), max(zs)) == pytest.approx((1.0, 3.8))
+
+
+@pytest.mark.parametrize("bad", [
+    {"s0": 0.0, "s1": 0.9, "head": 2.1},            # touches the end of the wall
+    {"s0": 5.5, "s1": 6.0, "head": 2.1},            # touches the other end
+    {"s0": 2.0, "s1": 2.9, "head": 2.8},            # reaches the top
+    {"s0": 2.0, "s1": 2.9, "sill": 1.0, "head": 0.9},   # head below sill
+    {"s0": 2.0, "s1": 2.9, "sill": -0.1, "head": 2.1},  # below the base
+    {"s0": 2.0, "s1": 2.9},                          # no head
+])
+def test_an_opening_that_does_not_fit_is_refused(vp, bad):
+    assert mod.create_walls(vp, [{"a": [0, 0], "b": [6, 0], "thickness": 0.2,
+                                  "openings": [bad]}]) == []
+    assert vp.scene.groups == [] and vp.history.last_error
+
+
+def test_overlapping_openings_are_refused(vp):
+    ops = [{"s0": 1.0, "s1": 2.0, "head": 2.1}, {"s0": 1.9, "s1": 3.0, "head": 2.1}]
+    assert mod.create_walls(vp, [{"a": [0, 0], "b": [6, 0], "thickness": 0.2,
+                                  "openings": ops}]) == []
+
+
+def test_adding_a_door_to_an_existing_wall_is_one_undo_step(vp):
+    g = mod.create_walls(vp, [{"a": [0, 0], "b": [6, 0], "thickness": 0.2}], height=2.8)[0]
+    solid = _volume(g)
+    steps = len(vp.history.undo_stack)
+    assert mod.edit_walls(vp, [g], openings=[{"s0": 2, "s1": 2.9, "head": 2.1}]) == 1
+    assert len(vp.history.undo_stack) == steps + 1
+    assert _volume(g) == pytest.approx(solid - 0.9 * 2.1 * 0.2, rel=1e-4)
+    assert vp.history.undo()
+    assert _volume(g) == pytest.approx(solid, rel=1e-4)
+    assert g.ext[mod.KEY]["openings"] == []
+    assert vp.history.redo()
+    assert len(g.ext[mod.KEY]["openings"]) == 1
+
+
+def test_openings_survive_save_reopen_and_update_3d(vp, tmp_path):
+    g = _wall_with(vp, [{"s0": 2.0, "s1": 2.9, "head": 2.1},
+                        {"s0": 4.0, "s1": 5.0, "sill": 0.9, "head": 2.1}])
+    path = tmp_path / "porta.igz"
+    igz.save_scene(vp.scene, path)
+    again = Scene()
+    igz.load_into(again, path)
+    got = again.groups[0]
+    assert got.ext[mod.KEY]["openings"] == g.ext[mod.KEY]["openings"]
+    vp2 = FakeViewport()
+    vp2.scene, vp2.history = again, History(again)
+    got.mesh = mod.Mesh()                                       # geometry lost
+    assert mod.update_3d(vp2) == 1
+    assert _volume(got) == pytest.approx(_volume(g), rel=1e-6)
+
+
+def test_merging_the_pieces_around_a_gap_makes_one_wall_with_the_opening():
+    pieces = [_w((0, 0), (2, 0)), _w((2.9, 0), (6, 0))]
+    gaps = mod.wall_gaps(pieces)
+    merged, ignored = mod.merge_gap_walls(pieces, gaps)
+    assert ignored == [] and len(merged) == 1
+    m = merged[0]
+    assert m["a"] == pytest.approx([0, 0]) and m["b"] == pytest.approx([6, 0])
+    assert m["openings"] == [{"s0": pytest.approx(2.0), "s1": pytest.approx(2.9),
+                              "sill": 0.0, "head": 2.10}]
+
+
+def test_a_chain_of_three_pieces_and_a_per_gap_head():
+    pieces = [_w((0, 0), (2, 0)), _w((2.9, 0), (5, 0)), _w((5.8, 0), (8, 0))]
+    gaps = mod.wall_gaps(pieces)
+    assert len(gaps) == 2
+    gaps[0]["head"] = 2.0
+    gaps[1]["head"] = 2.2
+    merged, _ = mod.merge_gap_walls(pieces, gaps)
+    assert len(merged) == 1
+    assert [o["head"] for o in merged[0]["openings"]] == [2.0, 2.2]
+
+
+def test_pieces_far_apart_in_thickness_are_not_merged():
+    pieces = [_w((0, 0), (2, 0), 0.12), _w((2.9, 0), (6, 0), 0.25)]
+    gaps = mod.wall_gaps(pieces)
+    merged, ignored = mod.merge_gap_walls(pieces, gaps)
+    assert len(merged) == 2 and len(ignored) == 1
+    assert all(not r.get("openings") for r in merged)
+
+
+def test_unrelated_pieces_pass_through_untouched():
+    pieces = [_w((0, 0), (2, 0)), _w((2.9, 0), (6, 0)), _w((0, 5), (3, 5))]
+    merged, _ = mod.merge_gap_walls(pieces, mod.wall_gaps(pieces))
+    assert len(merged) == 2
+    assert any(r["a"] == [0, 5] and "openings" not in r for r in merged)
+
+
+def test_overlapping_gaps_around_a_short_piece_become_one_opening():
+    # a short stub between two pieces makes the same door show up twice
+    pieces = [_w((0, 0), (2, 0)), _w((2.0, 0), (2.4, 0)), _w((3.3, 0), (6, 0))]
+    gaps = mod.wall_gaps(pieces, min_piece=0.3)
+    two = [dict(g, head=2.1) for g in gaps]
+    # force a second, overlapping gap, as the real plan produced
+    two.append({"a": [2.0, 0.0], "b": [3.3, 0.0], "width": 1.3, "thickness": 0.15,
+                "between": (0, 2), "head": 2.2})
+    merged, _ = mod.merge_gap_walls(pieces, two)
+    ops = [o for r in merged for o in r.get("openings", [])]
+    assert len(ops) == 1
+    assert ops[0]["s0"] == pytest.approx(2.0) and ops[0]["s1"] == pytest.approx(3.3)
+    assert ops[0]["head"] == 2.2                       # the taller one wins
+    assert mod.create_walls(FakeViewport(), merged) != []   # and it builds

@@ -137,8 +137,39 @@ def normalize_record(rec: dict) -> dict:
         raise BimProtoError("non-finite value in the wall record")
     if out["thickness"] <= _EPS or out["height"] <= _EPS:
         raise BimProtoError("thickness and height must be positive")
-    if math.hypot(b[0] - a[0], b[1] - a[1]) <= _EPS:
+    length = math.hypot(b[0] - a[0], b[1] - a[1])
+    if length <= _EPS:
         raise BimProtoError("the wall has no length")
+    out["openings"] = _normalize_openings(rec.get("openings"), length,
+                                          out["height"])
+    return out
+
+
+def _normalize_openings(raw, length: float, height: float) -> list:
+    """Aberturas da parede, em coordenadas LOCAIS: ``s0``/``s1`` ao longo do
+    eixo (0 = ponto ``a``), ``sill`` (peitoril) e ``head`` (topo do vão) em
+    metros acima da base. ``sill`` 0 é uma porta. Cada abertura tem de caber
+    inteira na parede, sem encostar nas pontas nem no topo e sem se sobrepor
+    às outras; senão levanta :class:`BimProtoError`."""
+    out = []
+    for o in raw or []:
+        try:
+            s0, s1 = sorted((float(o["s0"]), float(o["s1"])))
+            sill = float(o.get("sill", 0.0))
+            head = float(o["head"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise BimProtoError(f"bad opening: {exc}") from exc
+        if not all(math.isfinite(v) for v in (s0, s1, sill, head)):
+            raise BimProtoError("non-finite value in an opening")
+        if s0 <= _EPS or s1 >= length - _EPS or s1 - s0 <= _EPS:
+            raise BimProtoError("an opening must lie inside the wall's length")
+        if sill < 0 or head <= sill or head >= height - _EPS:
+            raise BimProtoError("an opening needs 0 <= sill < head < height")
+        out.append({"s0": s0, "s1": s1, "sill": sill, "head": head})
+    out.sort(key=lambda o: o["s0"])
+    for prev, nxt in zip(out, out[1:]):
+        if nxt["s0"] < prev["s1"] + _EPS:
+            raise BimProtoError("openings overlap")
     return out
 
 
@@ -156,6 +187,8 @@ def wall_mesh(rec: dict, base_z: float) -> Mesh:
     length = math.hypot(dx, dy)
     nx, ny = -dy / length, dx / length          # esquerda do eixo
     h = rec["thickness"] / 2.0
+    if rec.get("openings"):
+        return _wall_mesh_with_openings(rec, base_z, length)
     foot = [(ax - nx * h, ay - ny * h), (bx - nx * h, by - ny * h),
             (bx + nx * h, by + ny * h), (ax + nx * h, ay + ny * h)]  # anti-horário
     z0, z1 = base_z, base_z + rec["height"]
@@ -167,6 +200,89 @@ def wall_mesh(rec: dict, base_z: float) -> Mesh:
     for i in range(4):
         j = (i + 1) % 4
         mesh.add_face([low[i], low[j], top[j], top[i]])      # lado, para fora
+    return mesh
+
+
+def _newell(loop):
+    """Normal (não unitária) de um laço 3D de tuplas."""
+    nx = ny = nz = 0.0
+    for i in range(len(loop)):
+        c, n = loop[i], loop[(i + 1) % len(loop)]
+        nx += (c[1] - n[1]) * (c[2] + n[2])
+        ny += (c[2] - n[2]) * (c[0] + n[0])
+        nz += (c[0] - n[0]) * (c[1] + n[1])
+    return nx, ny, nz
+
+
+def _pip(pt, poly) -> bool:
+    """Ponto dentro de um polígono 2D (par-ímpar)."""
+    x, y = pt
+    inside = False
+    for i in range(len(poly)):
+        x1, y1 = poly[i]
+        x2, y2 = poly[(i + 1) % len(poly)]
+        if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / (y2 - y1) + x1:
+            inside = not inside
+    return inside
+
+
+def _wall_mesh_with_openings(rec: dict, base_z: float, length: float) -> Mesh:
+    """Parede com portas e janelas de verdade: o PERFIL da elevação (s ao longo
+    do eixo, z para cima) é um retângulo com entalhes (portas, que chegam ao
+    chão) e furos (janelas), extrudado na espessura. As faces das duas
+    pontas do perfil levam os furos como ``hole_loops``; os batentes são os
+    quadriláteros das bordas. Todas as normais para fora do sólido."""
+    ax, ay = rec["a"]
+    ux, uy = (rec["b"][0] - ax) / length, (rec["b"][1] - ay) / length
+    nx, ny = -uy, ux
+    half = rec["thickness"] / 2.0
+    height = rec["height"]
+    outline = [(0.0, 0.0)]
+    holes = []
+    for o in rec["openings"]:
+        if o["sill"] <= _EPS:                       # porta: entalhe no pé
+            outline += [(o["s0"], 0.0), (o["s0"], o["head"]),
+                        (o["s1"], o["head"]), (o["s1"], 0.0)]
+        else:                                       # janela: furo
+            holes.append([(o["s0"], o["sill"]), (o["s1"], o["sill"]),
+                          (o["s1"], o["head"]), (o["s0"], o["head"])])
+    outline += [(length, 0.0), (length, height), (0.0, height)]
+
+    def at(pt, t):
+        s_, z_ = pt
+        return (ax + ux * s_ + nx * t, ay + uy * s_ + ny * t, base_z + z_)
+
+    def oriented(loop3, want):
+        n = _newell(loop3)
+        return loop3 if sum(a * b for a, b in zip(n, want)) > 0 else loop3[::-1]
+
+    def vec(loop3):
+        return [QVector3D(*p) for p in loop3]
+
+    mesh = Mesh()
+    for t, want in ((half, (nx, ny, 0.0)), (-half, (-nx, -ny, 0.0))):
+        outer = oriented([at(p, t) for p in outline], want)
+        inner = [oriented([at(p, t) for p in hole], tuple(-w for w in want))
+                 for hole in holes]
+        mesh.add_face(vec(outer), [vec(hl) for hl in inner])
+
+    def material(pt) -> bool:
+        return _pip(pt, outline) and not any(_pip(pt, hl) for hl in holes)
+
+    for loop in [outline] + holes:
+        for i in range(len(loop)):
+            p, q = loop[i], loop[(i + 1) % len(loop)]
+            ds, dz = q[0] - p[0], q[1] - p[1]
+            size = math.hypot(ds, dz)
+            if size <= _EPS:
+                continue
+            ps, pz = dz / size, -ds / size             # perpendicular no perfil
+            probe = ((p[0] + q[0]) / 2 + ps * 1e-4, (p[1] + q[1]) / 2 + pz * 1e-4)
+            if material(probe):                        # apontava para dentro
+                ps, pz = -ps, -pz
+            want = (ux * ps, uy * ps, pz)
+            quad = [at(p, -half), at(q, -half), at(q, half), at(p, half)]
+            mesh.add_face(vec(oriented(quad, want)))
     return mesh
 
 
@@ -419,6 +535,83 @@ def wall_gaps(records, min_gap: float = 0.45, max_gap: float = 2.7,
     return gaps
 
 
+def _union_openings(openings) -> list:
+    """Une aberturas que se sobrepõem ou se tocam: uma peça curta entre dois
+    vãos faz o mesmo vão aparecer por dois pares de peças. A união vale o
+    maior vão (menor peitoril, maior topo)."""
+    out: list = []
+    for o in sorted(openings, key=lambda o: o["s0"]):
+        if out and o["s0"] <= out[-1]["s1"] + _EPS:
+            last = out[-1]
+            last["s1"] = max(last["s1"], o["s1"])
+            last["sill"] = min(last["sill"], o["sill"])
+            last["head"] = max(last["head"], o["head"])
+        else:
+            out.append(dict(o))
+    return out
+
+
+def merge_gap_walls(records, gaps, max_thickness_diff: float = 0.03):
+    """Funde os trechos que cercam cada vão numa parede CONTÍNUA com a abertura
+    no lugar da lacuna — a porta vira parâmetro da parede, não duas paredes e
+    uma verga. ``gaps``: itens de :func:`wall_gaps` (o chamador escolhe quais
+    viram abertura; cada um pode trazer ``head`` — topo do vão, padrão 2,10 m
+    — e ``sill``, padrão 0). Trechos com espessuras que diferem mais que
+    ``max_thickness_diff`` não são fundidos. Aberturas que se sobrepõem na
+    parede fundida viram uma só (ver :func:`_union_openings`). Devolve ``(registros, ignorados)``:
+    os registros (fundidos ou intactos) e os vãos que ficaram de fora."""
+    recs = [dict(r) for r in records]
+    parent = list(range(len(recs)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    used, ignored = [], []
+    for g in gaps:
+        i, j = g["between"]
+        if abs(recs[i]["thickness"] - recs[j]["thickness"]) > max_thickness_diff:
+            ignored.append(g)
+            continue
+        parent[find(i)] = find(j)
+        used.append(g)
+    groups: dict = {}
+    for k in range(len(recs)):
+        groups.setdefault(find(k), []).append(k)
+    out = []
+    for members in groups.values():
+        if len(members) == 1:
+            out.append(recs[members[0]])
+            continue
+        first = recs[min(members)]
+        a0 = first["a"]
+        dx, dy = first["b"][0] - a0[0], first["b"][1] - a0[1]
+        length = math.hypot(dx, dy)
+        ux, uy = dx / length, dy / length
+
+        def proj(p):
+            return (p[0] - a0[0]) * ux + (p[1] - a0[1]) * uy
+        ends = [proj(recs[m][e]) for m in members for e in ("a", "b")]
+        smin, smax = min(ends), max(ends)
+        mset = set(members)
+        openings = []
+        for g in used:
+            if g["between"][0] in mset:
+                s0, s1 = sorted((proj(g["a"]) - smin, proj(g["b"]) - smin))
+                openings.append({"s0": s0, "s1": s1,
+                                 "sill": g.get("sill", 0.0),
+                                 "head": g.get("head", 2.10)})
+        merged = {k: v for k, v in first.items() if k not in ("a", "b")}
+        merged.update({"a": [a0[0] + ux * smin, a0[1] + uy * smin],
+                       "b": [a0[0] + ux * smax, a0[1] + uy * smax],
+                       "thickness": max(recs[m]["thickness"] for m in members),
+                       "openings": _union_openings(openings)})
+        out.append(merged)
+    return out, ignored
+
+
 def create_walls(viewport, records, *, height=None, level="PB",
                  base_offset=0.0) -> list:
     """Cria várias paredes num ÚNICO passo de desfazer (importar uma planta
@@ -436,7 +629,8 @@ def create_walls(viewport, records, *, height=None, level="PB",
                 "kind": "wall", "a": rec["a"], "b": rec["b"],
                 "thickness": rec["thickness"],
                 "height": DEFAULTS["height"] if height is None else height,
-                "level": level, "base_offset": base_offset})
+                "level": level, "base_offset": base_offset,
+                "openings": rec.get("openings", [])})
             scene.groups.append(g)
             made.append(g)
 
@@ -447,10 +641,11 @@ def create_walls(viewport, records, *, height=None, level="PB",
 
 def edit_walls(viewport, targets, **changes) -> int:
     """Muda parâmetros (``thickness``, ``height``, ``level``, ``base_offset``,
-    ``a``, ``b``) de ``targets`` E regenera o 3D, num único passo de
+    ``a``, ``b``, ``openings``) de ``targets`` E regenera o 3D, num único passo de
     desfazer — desfazer devolve parâmetros e geometria juntos. Devolve
     quantas paredes mudaram."""
-    allowed = {"thickness", "height", "level", "base_offset", "a", "b"}
+    allowed = {"thickness", "height", "level", "base_offset", "a", "b",
+               "openings"}
     unknown = set(changes) - allowed
     if unknown:
         raise TypeError(f"unknown wall parameter(s): {sorted(unknown)}")

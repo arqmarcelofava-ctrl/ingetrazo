@@ -39,7 +39,7 @@ dela é movido. A lista completa está na seção 3.
 | 5 | Regenerar a geometria 3D a partir de parâmetros guardados, num passo de desfazer | **SIM** | Padrão do Windowizer, provado em `plugins/bim_proto.py`; o núcleo não avisa quando o objeto é movido. |
 | 6 | Acrescentar prancha ou modelo de página ao compositor e exportar PDF ou SVG | **PARCIAL** | Prancha: sim (dados públicos). Modelo: só por arquivo JSON. PDF: só por caminho privado. SVG: não existe. |
 
-As evidências executáveis estão em `tests/test_bim_proto.py` (53 testes) e
+As evidências executáveis estão em `tests/test_bim_proto.py` (71 testes) e
 `tests/test_spike_viabilidade.py` (7 testes); cada afirmação abaixo diz qual
 teste a sustenta, quando há.
 
@@ -305,7 +305,7 @@ repositório.
 | Parâmetros da parede | `group.ext["bim_proto"] = {kind, a, b, thickness, height, level, base_offset}` — por objeto, no `.igz`. |
 | Níveis | `scene.plugin_data["bim_proto"]["levels"] = [{id, name, z}]` — do projeto, no `.igz`. Sempre existe `PB`. |
 | Geometria | derivada: prisma fechado (6 faces, normais para fora), `z = z(nível) + base_offset`. Volume = comprimento × espessura × altura (teste). Etiqueta `IfcWall` via `core.bim.tag_group`. |
-| Vãos | `wall_gaps(registros)`: acha as lacunas de porta entre trechos alinhados; a verga é `create_walls(..., base_offset=altura_da_porta)`. |
+| Vãos | `wall_gaps(registros)` acha as lacunas de porta; `merge_gap_walls` as funde numa parede contínua com `openings` (porta = entalhe, janela = furo). Sem fundir, a verga é `create_walls(..., base_offset=altura_da_porta)`. |
 | Importar planta | `wall_from_rectangle(pontos)` (retângulo em qualquer orientação → eixo + espessura) e `create_walls(viewport, registros)`: lote em **1 passo** de desfazer. |
 | Atualizar 3D | `update_3d(viewport, alvos=None)`: regenera paredes (seleção, ou todas) de seus registros e dos níveis, **todas num único passo**. |
 | Editar + atualizar | `edit_walls(viewport, alvos, **parametros)`: 1 passo, desfaz parâmetros e geometria. |
@@ -318,7 +318,7 @@ pip install -r requirements.txt           # nenhuma dependência nova
 QT_QPA_PLATFORM=offscreen python -m pytest tests/test_bim_proto.py tests/test_spike_viabilidade.py
 ```
 
-Resultado nesta sessão: **60 passaram**. Além disso, rodei a seleção
+Resultado nesta sessão: **78 passaram**. Além disso, rodei a seleção
 `-k "plugin or extension or shortcut or bundle or spec or deferred or menu"`
 da suíte inteira (carregador, atalhos, menu Extensões, plugins empacotados):
 387 passaram, 1 ignorado. **Não rodei a suíte completa** (5 mil testes).
@@ -402,30 +402,20 @@ Achados que valem para qualquer planta importada:
    da porta (porta de 0,80 m → vão de 0,87 m; 0,70 m → 0,77 m). As outras 6 são
    portas de shaft, de correr em vidro e uma "mimetizada", sem lacuna na alvenaria.
    O nome do bloco da porta (Revit) traz a largura e a altura ("80 x 210 cm").
-8. **Ainda não é um furo paramétrico.** A verga é uma parede baixa sobre o vão;
-   mudar a largura da porta não regenera nada. Esquadrias de fachada (montantes
-   e painéis), peitoris e guarda-corpos não foram reconstruídos. O passo seguinte
-   é uma parede **com furo** (`Face.hole_loops`, como o Windowizer faz).
-
-### Inspecionar um modelo grande (`scripts/inspecionar_modelo.py`)
-
-Abre `.igz`, `.glb`, `.skp`, `.dae`, `.obj`, `.stl`, `.dxf` ou `.dwg` pelos
-**mesmos importadores do aplicativo**, imprime o que veio (faces, grupos,
-camadas, cenas, caixa em metros, aviso se a unidade não parece metro) e desenha
-planta cortada, frente e axonometria pelo passe `core.hlr` — sem OpenGL. Serve
-para um modelo de centenas de MB num computador sem placa de vídeo.
-
-```
-QT_QPA_PLATFORM=offscreen python scripts/inspecionar_modelo.py modelos/apartamento.glb
-python scripts/inspecionar_modelo.py modelos/x.skp --corte 1.2 --saida modelos/saida
-python scripts/inspecionar_modelo.py modelos/x.glb --so-relatorio     # só o relatório
-```
-
-As imagens vão para `modelos/saida/` e a pasta `modelos/` está no `.gitignore`
-(dado de cliente não entra no Git). Acima de 60 mil faces o desenho pede
-`--forcar`, porque o passe de linhas exato é lento. Testado com `.igz`, `.glb`
-(ida e volta de um exemplo do repositório) e `.dwg`; **não** testado com
-`.skp`, `.dae`, `.obj`, `.stl` nem com um modelo de centenas de MB.
+8. **Abertura de verdade na parede.** O registro da parede agora aceita
+   `openings` (`s0`, `s1`, `sill`, `head`, em coordenadas locais do eixo): porta =
+   entalhe no pé, janela = furo (`Face.hole_loops`) com os batentes; o sólido
+   continua fechado (volume exato nos testes) e a abertura é parâmetro da parede,
+   guardado no `.igz` e regenerado por Atualizar 3D e por `edit_walls(...,
+   openings=[...])` num passo de desfazer. `merge_gap_walls` funde os trechos que
+   cercam cada vão numa parede contínua. **Caso real que os testes sintéticos não
+   tinham:** uma peça curta entre dois vãos fazia a mesma porta aparecer duas vezes
+   (aberturas sobrepostas); a fusão agora une as sobrepostas.
+   Na planta de teste: 12 portas ligadas → 8 aberturas em 125 paredes contínuas,
+   todas sólidos fechados, 1 passo de desfazer; 3 vãos entre trechos de espessuras
+   diferentes (12 e 25 cm) não fundiram e ficaram com verga.
+9. Ainda **não** reconstruídos: esquadrias de fachada (montantes e painéis),
+   peitoris de janela, guarda-corpos, folhas de porta, e o encontro de paredes.
 
 ### Limites conhecidos do protótipo (de propósito)
 

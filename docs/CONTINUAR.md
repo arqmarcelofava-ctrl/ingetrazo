@@ -33,8 +33,8 @@ GPL-3.0); **nenhum dado real de cliente no repositório**.
 | O quê | Onde |
 |---|---|
 | Resposta às 6 perguntas de viabilidade, tabela, o que exigiria mudar o núcleo, o que ficou sem verificar | `docs/spike-viabilidade.md` |
-| Protótipo: ferramenta de parede por dois pontos, parâmetros em `group.ext`, níveis em `plugin_data`, **Atualizar 3D** num passo de desfazer, painel «Project» (árvore), importar planta (`wall_from_rectangle`), criação em lote (`create_walls`), vãos de porta (`wall_gaps`) | `plugins/bim_proto.py` |
-| Testes (60, todos passam) | `tests/test_bim_proto.py`, `tests/test_spike_viabilidade.py` |
+| Protótipo: ferramenta de parede por dois pontos, parâmetros em `group.ext`, níveis em `plugin_data`, **Atualizar 3D** num passo de desfazer, painel «Project» (árvore), importar planta (`wall_from_rectangle`), criação em lote (`create_walls`), vãos de porta (`wall_gaps`), **aberturas de verdade nas paredes** (`openings`, `merge_gap_walls`) | `plugins/bim_proto.py` |
+| Testes (78, todos passam) | `tests/test_bim_proto.py`, `tests/test_spike_viabilidade.py` |
 | Inspeciona qualquer modelo (.igz .glb .skp .dae .obj .stl .dxf .dwg) e desenha planta cortada, frente e axonometria **sem placa de vídeo** | `scripts/inspecionar_modelo.py` |
 | Imagens de exemplo (paredes de teste, janela com o painel) | `docs/images/` |
 
@@ -63,8 +63,11 @@ qualquer planta importada:
 5. O DWG **não tem alturas nem níveis** (Z ≈ 0). A altura (2,80 m) é
    **suposição**: pergunte o pé-direito real ao usuário.
 6. Vãos de porta aparecem como **lacunas** entre trechos de parede alinhados.
-   `wall_gaps` as acha; a verga é `create_walls(..., base_offset=altura_da_porta)`.
-   Ligou 12 de 18 portas, e a largura do vão bate com a da porta (80 cm → 87 cm).
+   `wall_gaps` as acha e `merge_gap_walls` funde os trechos numa parede contínua
+   com a abertura (`openings`); sem fundir, a verga é `create_walls(...,
+   base_offset=altura_da_porta)`. Ligou 12 de 18 portas, e a largura do vão bate
+   com a da porta (80 cm → 87 cm). Uma peça curta entre dois vãos fazia a mesma
+   porta aparecer duas vezes: as aberturas sobrepostas são unidas.
    O nome do bloco da porta (Revit) traz largura e altura ("80 x 210 cm").
 7. As paredes **não se unem nos cantos** quando desenhadas por eixo (aparece
    como quadradinhos na planta). O protótipo ainda não resolve encontros.
@@ -105,10 +108,9 @@ onde o arquivo está. O que o `.glb` acrescenta ao DWG: mobília, acabamentos e 
    o que o `.glb` acrescenta e o que ele **não** traz (um `.glb` não tem camadas
    BIM nem níveis).
 6. Pergunte o **pé-direito real** e troque o 2,80 m assumido.
-7. Próximos passos de produto, se o usuário quiser: parede **com furo** (face
-   com `hole_loops`, como o Windowizer em `examples/extensions/windowizer.py`)
-   no lugar da verga; planta da base comparada com a proposta; esquadrias da
-   fachada; resolver encontros de parede.
+7. Próximos passos de produto, se o usuário quiser: planta da base comparada
+   com a proposta; esquadrias da fachada (montantes e painéis) e peitoris;
+   resolver encontros de parede; tornar o painel «Project» interativo.
 
 ## 6. Como rodar
 
