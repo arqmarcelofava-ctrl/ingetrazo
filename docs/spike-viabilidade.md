@@ -316,6 +316,7 @@ repositório.
 | Planta 2D com projeções | `plan_drawing(cena, corte=1.2)` devolve `cut` (anéis do poché), `below` (linhas do que está abaixo do corte) e `above` (a **projeção** do que está acima: verga sobre a porta, viga, armário alto…, só o que não coincide com o corte nem com o que está abaixo); `render_plan(plano, style="ao"|"cad")` pinta numa `QImage` com poché, linha fina e **tracejado**, como no AutoCAD; o estilo `ao` segue o padrão MEDIDO de um PDF de layout do escritório (ver item 16). Dois passes do `core.hlr` (plano de corte normal para cima e para baixo), sem GL; a cena não é alterada. |
 | Giro da porta | `door_swing(registros, parede, abertura)`: regra «a porta SEMPRE abre para a parede» — dobradiça no lado do canto, folha aberta a 90° rente à parede perpendicular (até 1 m do batente, com comprimento para receber a folha). Devolve dobradiça, lado, folga, e as `alternatives` (outras paredes que também recebem a folha); `ambiguous` quando a regra sozinha não decide. `create_leaves(auto_swing=True)` aplica; `overrides` manda por cima. |
 | Ambientes | `detect_rooms(registros)` acha os cômodos fechados pelas paredes e esquadrias (grade de 1 cm, contorno simplificado, pilares viram buracos, a região de fora e as menores que 1 m² não contam); `name_rooms` dá o nome por dicas (p.ex. bloco de cozinha); `create_rooms` cria uma **zona de piso** fechada (`IfcSpace`) por ambiente em 1 passo; `area_table` devolve a tabela de área útil (vírgula decimal); `render_plan(..., labels=True)` escreve nome e área. |
+| Importar DWG/DXF | `import_plan(viewport, caminho)` — botão **Importar DWG** do painel (diálogo: camadas de parede, planta, alturas). Abre o `.dwg` pelo conversor do núcleo (`formats.dwg_bridge`), lê os polígonos das camadas escolhidas (blocos aninhados e **espelhados** certos, hachuras, e qualquer bloco de nome «pilar»), separa **plantas empilhadas** (`split_plans`), liga as **portas** do desenho (`plan_doors`) ao vão mais próximo e faz paredes contínuas com abertura (ou verga). **Um passo de desfazer**; o deslocamento fica em `plugin_data["imports"]`. |
 | Atualizar 3D | `update_3d(viewport, alvos=None)`: regenera paredes, esquadrias, peitoris, portas, blocos e ambientes (seleção, ou todas) de seus registros e dos níveis, **todas num único passo**. |
 | Editar + atualizar | `edit_walls(viewport, alvos, **parametros)`: 1 passo, desfaz parâmetros e geometria. |
 | Navegador | `add_outliner_kind` rotula a parede ("Parede", nível, espessura, altura). |
@@ -577,6 +578,21 @@ Achados que valem para qualquer planta importada:
 ![Painel BIM na janela](images/bim_proto_janela_painel.png)
 
 ![Painel BIM, só os botões](images/bim_proto_painel_botoes.png)
+
+19. **Importar DWG ligado (botão do painel).** A lógica que estava em scripts de apoio foi
+    para a extensão e passou a ter teste com um DXF sintético que reúne os casos difíceis
+    (polígono direto, vão com bloco de porta, bloco **aninhado e espelhado**, parede só de
+    hachura, bloco «pilar», peça em L, camada que não é de parede, segunda planta 30 m
+    acima). **No DWG real** (abre em ~7 s): camadas com polígonos listadas, a de alvenaria
+    sugerida pelo nome; duas plantas separadas (133 e 131 peças); da proposta saem
+    **124 paredes contínuas, 8 vãos de porta e 3 vergas**, 127 sólidos fechados, **um
+    passo de desfazer** — os mesmos números e o mesmo deslocamento (2,2972; −0,0131)
+    dos scripts. **Atenção:** a separação em plantas usa uma distância (6 m); com 3 m os
+    pilares isolados da fachada viravam «plantas» à parte. **Limites:** só reconhece
+    parede que seja RETÂNGULO (L, T e curva ficam de fora, contados); as portas ligam ao
+    vão mais próximo (até 1,3 m) — portas sem vão na alvenaria não viram abertura;
+    não importa esquadrias, peitoris, mobília nem ambientes (os outros botões fazem isso);
+    camadas que o desenhista usa de outro jeito pedem escolha manual no diálogo.
 
 ### Peitoril e folha aberta (exemplo sintético)
 

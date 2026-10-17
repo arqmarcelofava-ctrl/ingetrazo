@@ -18,7 +18,7 @@ Um arquivo, `plugins/bim_proto.py`, mais testes (163 passando), imagens e docume
 | Ambientes | Detecta os cômodos pelas paredes, cria a zona de piso (IfcSpace) e calcula a área útil. |
 | Planta 2D | Corte a 1,20 m com **projeções tracejadas** (o que está acima do corte), no padrão gráfico do escritório (poché preto, linha cinza fina, tracejado 9,8/4,3 pt). |
 | Comparação | Base × proposta (o que fica, o que sai, o que entra). |
-| Importar planta real | Do DWG: paredes, vãos de porta, portas, esquadrias — conferido contra o desenho a menos de 5 mm. |
+| Importar DWG | Botão no painel: paredes, pilares e vãos de porta do DWG/DXF (blocos aninhados e espelhados, hachuras, plantas empilhadas); no desenho real, 124 paredes, 8 vãos e 3 vergas, conferido contra o desenho a menos de 5 mm. Esquadrias e portas detalhadas entram pelos outros botões/funções. |
 
 ## Como aparece na tela
 
@@ -26,8 +26,8 @@ Um painel novo, **«Projeto»**, na aba lateral (junto de Propriedades e Navegad
 agrupados: Desenhar (Parede), Aberturas (Unir cantos, Portas, Peitoris), Ambientes (Detectar, Áreas),
 Planta 2D (altura do corte, estilo, nomes dos ambientes) e Elementos (Atualizar 3D); embaixo, a árvore do
 projeto (pavimentos, paredes, portas, ambientes com área, vistas, pranchas). Há também o menu
-*Extensões ▸ BIM proto*. Os ícones são desenhados no mesmo estilo dos do programa. Importar DWG e Biblioteca
-de blocos aparecem apagados («Em breve»). Imagem: `docs/images/bim_proto_janela_painel.png`.
+*Extensões ▸ BIM proto*. Os ícones são desenhados no mesmo estilo dos do programa. **Importar DWG está ligado** (escolhe o arquivo, as camadas de parede, a planta e as alturas; um
+passo de desfazer). Só a Biblioteca de blocos aparece apagada («Em breve»). Imagem: `docs/images/bim_proto_janela_painel.png`.
 O núcleo não deixa a extensão criar barra de ferramentas própria (só menu, painel e menu de contexto).
 
 ## O que ainda NÃO está pronto

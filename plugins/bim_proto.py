@@ -87,7 +87,13 @@ _TEXTS = {
         "Doors": "Portas", "Swing": "Giro", "Detect rooms": "Detectar",
         "Area table": "Áreas", "Generate plan…": "Gerar planta…",
         "Import DWG": "Importar DWG", "Block library": "Biblioteca",
-        "Soon": "Em breve", "Cut at (m)": "Corte a (m)", "Style": "Estilo",
+        "Soon": "Em breve", "Plan to import": "Planta a importar",
+        "Layers with walls": "Camadas com paredes", "Wall height (m)": "Altura das paredes (m)",
+        "Door height (m)": "Altura das portas (m)", "Put the plan corner at 0,0": "Pôr o canto da planta em 0,0",
+        "Open DWG or DXF": "Abrir DWG ou DXF",
+        "Plan {n}: {count} pieces (y {y0:.0f} to {y1:.0f} m)": "Planta {n}: {count} peças (y de {y0:.0f} a {y1:.0f} m)",
+        "Imported: {walls} walls, {openings} door openings, {headers} headers": "Importado: {walls} paredes, {openings} vãos de porta, {headers} vergas",
+        "Import failed: {why}": "Falha ao importar: {why}", "Cut at (m)": "Corte a (m)", "Style": "Estilo",
         "Office": "Escritório", "CAD": "CAD", "Room names": "Nomes dos ambientes",
         "{n} room(s) detected": "{n} ambiente(s) detectado(s)",
         "No closed rooms found.": "Nenhum ambiente fechado encontrado.",
@@ -2398,6 +2404,264 @@ def fill_tree(tree, model) -> None:
     tree.expandAll()
 
 # ---------------------------------------------------------------------------
+# Importar planta (DWG/DXF): paredes, pilares e vãos de porta
+# ---------------------------------------------------------------------------
+
+#: Palavras que, no NOME da camada, sugerem o que ela guarda (minúsculas, sem acento).
+WALL_WORDS = ("alvenaria", "parede", "wall", "muro")
+DOOR_WORDS = ("porta", "door")
+COLUMN_WORDS = ("pilar", "column", "coluna")
+
+
+def _plain(text: str) -> str:
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFD", text.lower())
+                   if unicodedata.category(c) != "Mn")
+
+
+def open_plan(path):
+    """Abre um ``.dwg`` ou ``.dxf`` com o ezdxf e devolve o documento. O DWG passa
+    pelo conversor do núcleo (LibreDWG) e o DXF temporário é descartado em seguida."""
+    import ezdxf
+    from pathlib import Path
+    path = Path(path)
+    if path.suffix.lower() == ".dwg":
+        from formats.dwg_bridge import discard_temp_dxf, dwg_to_dxf
+        dxf = dwg_to_dxf(path)
+        try:
+            return ezdxf.readfile(str(dxf))
+        finally:
+            discard_temp_dxf(dxf)
+    return ezdxf.readfile(str(path))
+
+
+def _explode(ent, depth=0):
+    """As entidades de ``ent`` com os blocos (aninhados) abertos, já no mundo."""
+    if ent.dxftype() == "INSERT" and depth < 8:
+        for v in ent.virtual_entities():
+            yield from _explode(v, depth + 1)
+    else:
+        yield ent
+
+
+def _rings(ent) -> list:
+    """Anéis fechados (listas de (x, y) no MUNDO) de uma entidade: polilinha fechada
+    ou o contorno de uma hachura. Bloco espelhado traz a extrusão (0,0,-1): por isso
+    ``vertices_in_wcs`` (ler os pontos crus espelha a parede)."""
+    kind = ent.dxftype()
+    if kind == "LWPOLYLINE" and ent.closed:
+        pts = [(p[0], p[1]) for p in ent.vertices_in_wcs()]
+        return [pts] if len(pts) >= 3 else []
+    if kind == "HATCH":
+        from ezdxf.math import OCS
+        ocs = OCS(ent.dxf.extrusion)
+        out = []
+        for path in ent.paths:
+            if getattr(path, "vertices", None) and len(path.vertices) >= 3:
+                w = ocs.points_to_wcs([(v[0], v[1], ent.dxf.elevation.z)
+                                       for v in path.vertices])
+                out.append([(q.x, q.y) for q in w])
+        return out
+    return []
+
+
+def scan_plan(doc) -> list:
+    """As camadas do desenho que têm polígonos fechados (paredes, hachuras…):
+    ``[{"layer", "count", "suggested"}]`` — ``suggested`` quando o nome fala de
+    parede/alvenaria. Do que tem mais polígonos para o que tem menos."""
+    count: dict = {}
+    for ent in doc.modelspace():
+        top = ent.dxf.layer
+        for e in _explode(ent):
+            n = len(_rings(e))
+            if n:
+                count[top] = count.get(top, 0) + n
+    return [{"layer": k, "count": v,
+             "suggested": any(w in _plain(k) for w in WALL_WORDS)}
+            for k, v in sorted(count.items(), key=lambda kv: -kv[1])]
+
+
+def plan_polygons(doc, layers) -> list:
+    """Os polígonos de parede e de pilar do desenho: tudo o que as camadas
+    ``layers`` têm (dentro de blocos também) mais qualquer bloco cujo NOME fale de
+    pilar/coluna. Iguais (a 1 mm) contam uma vez."""
+    wanted = set(layers)
+    seen, out = set(), []
+    for ent in doc.modelspace():
+        is_column = ent.dxftype() == "INSERT" and any(
+            w in _plain(ent.dxf.name) for w in COLUMN_WORDS)
+        if ent.dxf.layer not in wanted and not is_column:
+            continue
+        for e in _explode(ent):
+            for ring in _rings(e):
+                key = tuple(sorted((round(x, 3), round(y, 3)) for x, y in ring))
+                if key not in seen:
+                    seen.add(key)
+                    out.append(ring)
+    return out
+
+
+def split_plans(records, gap: float = 6.0) -> list:
+    """Separa em PLANTAS as paredes de ``records``: um desenho pode ter duas plantas
+    empilhadas (base e proposta). Peças cujas caixas ficam a menos de ``gap`` m uma
+    da outra são da mesma planta. ``[{"indices", "bbox": (x0, y0, x1, y1)}]``, da
+    com mais peças para a com menos."""
+    boxes = [(min(r["a"][0], r["b"][0]), min(r["a"][1], r["b"][1]),
+              max(r["a"][0], r["b"][0]), max(r["a"][1], r["b"][1])) for r in records]
+    parent = list(range(len(boxes)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    order = sorted(range(len(boxes)), key=lambda i: boxes[i][0])     # varre por x
+    for a_pos, i in enumerate(order):
+        for j in order[a_pos + 1:]:
+            if boxes[j][0] - gap > boxes[i][2]:
+                break                       # j e os seguintes começam longe demais em x
+            if boxes[j][1] - gap <= boxes[i][3] and boxes[i][1] - gap <= boxes[j][3]:
+                parent[find(i)] = find(j)
+    groups: dict = {}
+    for i in range(len(boxes)):
+        groups.setdefault(find(i), []).append(i)
+    out = []
+    for idx in sorted(groups.values(), key=len, reverse=True):
+        bx = [boxes[i] for i in idx]
+        out.append({"indices": idx, "bbox": (min(b[0] for b in bx), min(b[1] for b in bx),
+                                              max(b[2] for b in bx), max(b[3] for b in bx))})
+    return out
+
+
+def plan_doors(doc, layers=None) -> list:
+    """As PORTAS do desenho: blocos nas camadas com ``porta``/``door`` no nome (ou
+    ``layers``). ``[{"name", "c": (x, y), "w", "h"}]`` — o centro é o da caixa do
+    desenho do bloco; largura e altura vêm do nome (``80 x 210 cm``, ``700x2100``,
+    ``_090_H210``) quando ele as traz."""
+    import re
+    from ezdxf import bbox
+    out = []
+    for ins in doc.modelspace().query("INSERT"):
+        lay = ins.dxf.layer
+        if not (lay in (layers or ()) or (layers is None and any(
+                w in _plain(lay) for w in DOOR_WORDS))):
+            continue
+        ents = [x for x in _explode(ins) if x.dxftype() in ("LINE", "LWPOLYLINE", "ARC", "CIRCLE")]
+        if not ents:
+            continue
+        b = bbox.extents(ents, fast=True)
+        if not b.has_data:
+            continue
+        name, w, h = ins.dxf.name, None, None
+        for pat, k in ((r"(\d{2,3})\s*x\s*(\d{3})\s*cm", 100), (r"(\d{3,4})x(\d{4})", 1000),
+                       (r"_(\d{3})_H(\d{3})", 100)):
+            m = re.search(pat, name)
+            if m:
+                w, h = int(m.group(1)) / k, int(m.group(2)) / k
+                break
+        out.append({"name": name, "c": (b.center.x, b.center.y), "w": w, "h": h})
+    return out
+
+
+def import_plan(viewport, path=None, *, doc=None, layers=None, plan: int = 0,
+                level="PB", height=None, door_head: float = 2.10,
+                recenter: bool = True, min_fill: float = 0.97,
+                plan_gap: float = 6.0) -> dict:
+    """Importa a planta de ``path`` (``.dwg``/``.dxf``) — ou de ``doc`` já aberto — como
+    paredes paramétricas, num ÚNICO passo de desfazer:
+
+    * os polígonos das camadas ``layers`` (padrão: as sugeridas por nome) viram
+      paredes (``wall_from_rectangle``); o que não é retângulo (L, T, curva) fica
+      de fora e é contado;
+    * se o desenho traz várias plantas empilhadas, ``plan`` escolhe uma (0 = a com
+      mais peças; veja :func:`split_plans` — plantas a mais de ``plan_gap`` m uma da outra);
+    * as portas do desenho (:func:`plan_doors`) são ligadas ao vão mais próximo
+      (até 1,3 m); cada vão ligado vira uma ABERTURA de ``door_head`` m numa
+      parede contínua, e o vão que não pôde ser fundido (espessuras diferentes)
+      leva uma verga;
+    * ``recenter`` põe o canto da planta em (0, 0); o deslocamento fica em
+      ``plugin_data`` (``imports``) para quem for ler outras coisas do desenho.
+
+    Devolve um resumo: peças, paredes, aberturas, vergas, portas, deslocamento…
+    Levanta :class:`BimProtoError` se nada serve."""
+    doc = doc if doc is not None else open_plan(path)
+    cands = scan_plan(doc)
+    chosen = list(layers) if layers is not None else [c["layer"] for c in cands if c["suggested"]]
+    if not chosen:
+        raise BimProtoError("no wall layer found: pass layers=[...]")
+    pieces, skipped = [], 0
+    for ring in plan_polygons(doc, chosen):
+        try:
+            rec = wall_from_rectangle(ring, min_fill)
+        except BimProtoError:
+            skipped += 1
+            continue
+        if rec["thickness"] >= 0.03 and math.hypot(rec["b"][0] - rec["a"][0],
+                                                   rec["b"][1] - rec["a"][1]) >= 0.05:
+            pieces.append(rec)
+    if not pieces:
+        raise BimProtoError("no straight wall pieces in the chosen layers")
+    plans = split_plans(pieces, plan_gap)
+    if not 0 <= plan < len(plans):
+        raise BimProtoError(f"plan {plan} does not exist ({len(plans)} found)")
+    sel = [pieces[i] for i in plans[plan]["indices"]]
+    x0, y0, x1, y1 = plans[plan]["bbox"]
+    dx, dy = (x0, y0) if recenter else (0.0, 0.0)
+
+    def shift(pt):
+        return [pt[0] - dx, pt[1] - dy]
+
+    sel = [{"a": shift(r["a"]), "b": shift(r["b"]), "thickness": r["thickness"],
+            "level": level} for r in sel]
+    doors = [d for d in plan_doors(doc)
+             if x0 - 3 <= d["c"][0] <= x1 + 3 and y0 - 3 <= d["c"][1] <= y1 + 3]
+    gaps = wall_gaps(sel)
+    used, matched = set(), []
+    for d in doors:
+        cx, cy = d["c"][0] - dx, d["c"][1] - dy
+        best = None
+        for k, g in enumerate(gaps):
+            if k in used:
+                continue
+            mx, my = (g["a"][0] + g["b"][0]) / 2, (g["a"][1] + g["b"][1]) / 2
+            dist = math.hypot(mx - cx, my - cy)
+            if dist < 1.3 and (best is None or dist < best[0]):
+                best = (dist, k)
+        if best:
+            used.add(best[1])
+            matched.append(dict(gaps[best[1]], head=door_head))
+    merged, ignored = merge_gap_walls(sel, matched)
+    h = DEFAULTS["height"] if height is None else float(height)
+    headers = [{"a": g["a"], "b": g["b"], "thickness": g["thickness"],
+                "height": max(h - g["head"], 0.05), "base_offset": g["head"]}
+               for g in ignored]
+
+    def mutate(scene):
+        data = project_data(scene)
+        data.setdefault("imports", []).append(
+            {"layers": chosen, "shift": [dx, dy], "plan": plan,
+             "file": str(getattr(path, "name", path) or "")})
+        scene.plugin_data[KEY] = data
+        for rec in merged:
+            scene.groups.append(build_wall_group(scene, {
+                "kind": "wall", "a": rec["a"], "b": rec["b"], "thickness": rec["thickness"],
+                "height": h, "level": level, "base_offset": 0.0,
+                "openings": rec.get("openings", [])}))
+        for rec in headers:
+            scene.groups.append(build_wall_group(scene, dict(rec, kind="wall", level=level)))
+
+    summary = {"layers": chosen, "pieces": len(sel), "skipped": skipped,
+               "plans": [len(p_["indices"]) for p_ in plans], "plan": plan,
+               "doors": len(doors), "doors_matched": len(matched),
+               "walls": len(merged), "openings": sum(len(r.get("openings", [])) for r in merged),
+               "headers": len(headers), "shift": [dx, dy]}
+    if not _run(viewport, mutate):
+        raise BimProtoError(viewport.history.last_error or "import failed")
+    return summary
+
+
+# ---------------------------------------------------------------------------
 # Painel «BIM»: ícones e botões (a cara da extensão)
 # ---------------------------------------------------------------------------
 
@@ -2521,6 +2785,80 @@ def bim_icon(key: str):
     return QIcon(pm)
 
 
+def ask_import_options(parent=None):
+    """O diálogo de «Importar DWG»: escolhe o arquivo, as camadas de parede, a
+    planta (se o desenho tem mais de uma) e as alturas. Devolve os argumentos de
+    :func:`import_plan` (com o documento já aberto) ou ``None`` se cancelado."""
+    from PySide6.QtWidgets import (QApplication, QDialog, QDialogButtonBox, QFormLayout,
+                                   QListWidget, QListWidgetItem)
+    path, _ = QFileDialog.getOpenFileName(parent, _t("Open DWG or DXF"), "",
+                                          "DWG / DXF (*.dwg *.dxf)")
+    if not path:
+        return None
+    QApplication.setOverrideCursor(Qt.WaitCursor)
+    try:
+        doc = open_plan(path)
+        cands = scan_plan(doc)
+    finally:
+        QApplication.restoreOverrideCursor()
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(_t("Import DWG"))
+    form = QFormLayout(dlg)
+    lst = QListWidget()
+    for c in cands:
+        it = QListWidgetItem(f"{c['layer']}  ({c['count']})")
+        it.setData(Qt.UserRole, c["layer"])
+        it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+        it.setCheckState(Qt.Checked if c["suggested"] else Qt.Unchecked)
+        lst.addItem(it)
+    form.addRow(QLabel(_t("Layers with walls")), lst)
+    height, head = QDoubleSpinBox(), QDoubleSpinBox()
+    for w, v in ((height, DEFAULTS["height"]), (head, 2.10)):
+        w.setRange(0.5, 10.0)
+        w.setSingleStep(0.05)
+        w.setValue(v)
+    form.addRow(_t("Wall height (m)"), height)
+    form.addRow(_t("Door height (m)"), head)
+    recenter = QCheckBox(_t("Put the plan corner at 0,0"))
+    recenter.setChecked(True)
+    form.addRow(recenter)
+    plan_box = QComboBox()
+    form.addRow(_t("Plan to import"), plan_box)
+    buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+    buttons.accepted.connect(dlg.accept)
+    buttons.rejected.connect(dlg.reject)
+    form.addRow(buttons)
+
+    def checked():
+        return [lst.item(i).data(Qt.UserRole) for i in range(lst.count())
+                if lst.item(i).checkState() == Qt.Checked]
+
+    def fill_plans():
+        plan_box.clear()
+        layers = checked()
+        if not layers:
+            return
+        recs = []
+        for ring in plan_polygons(doc, layers):
+            try:
+                recs.append(wall_from_rectangle(ring))
+            except BimProtoError:
+                pass
+        for n, pl in enumerate(split_plans(recs) if recs else []):
+            x0, y0, x1, y1 = pl["bbox"]
+            plan_box.addItem(_t("Plan {n}: {count} pieces (y {y0:.0f} to {y1:.0f} m)",
+                                n=n + 1, count=len(pl["indices"]), y0=round(y0) + 0.0,
+                                y1=round(y1) + 0.0), n)
+
+    lst.itemChanged.connect(lambda _i: fill_plans())
+    fill_plans()
+    if dlg.exec() != QDialog.Accepted or not checked() or plan_box.currentData() is None:
+        return None
+    return {"path": path, "doc": doc, "layers": checked(), "plan": plan_box.currentData(),
+            "height": height.value(), "door_head": head.value(),
+            "recenter": recenter.isChecked()}
+
+
 class BimPanel(QWidget):
     """O painel «BIM»: botões com ícone (desenhar, aberturas, ambientes, planta 2D,
     atualizar) e, embaixo, a árvore do projeto. Cada botão chama uma função pública
@@ -2530,6 +2868,7 @@ class BimPanel(QWidget):
     choose_save_path = staticmethod(lambda: QFileDialog.getSaveFileName(
         None, _t("Generate plan…"), "planta.png", "PNG (*.png)")[0])
     show_text = staticmethod(lambda title, text: QMessageBox.information(None, title, text))
+    ask_import = staticmethod(ask_import_options)
 
     def __init__(self, app, start_wall) -> None:
         super().__init__()
@@ -2573,7 +2912,7 @@ class BimPanel(QWidget):
         vp = lambda: app.viewport
         section(_t("Draw"), [
             button("wall", _t("Wall"), _t("Draw a wall from two points, with thickness, height and base level."), start_wall),
-            button("import", _t("Import DWG"), _t("Import DWG"), None, enabled=False),
+            button("import", _t("Import DWG"), _t("Import DWG"), self.import_dwg),
             button("blocks", _t("Block library"), _t("Block library"), None, enabled=False)])
         section(_t("Openings"), [
             button("join", _t("Join corners"), _t("Join corners"), lambda: join_corners(vp())),
@@ -2605,6 +2944,18 @@ class BimPanel(QWidget):
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
         lay.addWidget(self.tree, 1)
+
+    def import_dwg(self):
+        opts = self.ask_import()
+        if not opts:
+            return
+        try:
+            r = import_plan(self.app.viewport, **opts)
+        except BimProtoError as exc:
+            _flash(self.app.viewport, _t("Import failed: {why}", why=str(exc)), 8000)
+            return
+        _flash(self.app.viewport, _t("Imported: {walls} walls, {openings} door openings, "
+                                     "{headers} headers", **r), 8000)
 
     def update(self):
         sel = []

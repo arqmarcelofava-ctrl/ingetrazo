@@ -1550,8 +1550,9 @@ def test_the_panel_has_icon_buttons_and_the_unbuilt_ones_are_dimmed(win):
     for key in ("wall", "join", "door", "room", "plan", "update"):
         b = panel.buttons[key]
         assert b.isEnabled() and not b.icon().isNull() and b.toolTip()
-    for key in ("import", "blocks"):                 # not built yet: dimmed, tooltip says so
-        assert not panel.buttons[key].isEnabled() and "Soon" in panel.buttons[key].toolTip()
+    assert panel.buttons["import"].isEnabled()       # wired: it imports a DWG/DXF
+    assert not panel.buttons["blocks"].isEnabled()   # not built yet: dimmed, tooltip says so
+    assert "Soon" in panel.buttons["blocks"].toolTip()
 
 
 def test_the_icons_are_drawn_not_loaded_and_all_different():
@@ -1619,3 +1620,142 @@ def test_room_floor_zones_do_not_hide_the_swing_arc_in_the_plan(vp):
     after = mod.plan_drawing(vp.scene, 1.2)
     assert len(after["below"]) == before             # the slab did not cover the arc
     assert vp.scene.groups == groups and len(after["rooms"]) == 1   # and nothing was left out
+
+
+# ---- Import DWG/DXF: walls, columns and door openings from a drawing --------------------
+
+def _rect_pts(x0, y0, x1, y1):
+    return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+
+
+def _drawing(tmp_path, name="plan.dxf"):
+    """A small drawing with every awkward case: direct polygons, a door gap with a door
+    block, a NESTED and MIRRORED wall block, a hatch-only wall, a column block, an L-shaped
+    piece, a layer that is not a wall layer, and a second plan 30 m away."""
+    import ezdxf
+    doc = ezdxf.new("R2018")
+    doc.layers.add("PAREDES"); doc.layers.add("PORTAS"); doc.layers.add("MOBILIA")
+    ms = doc.modelspace()
+    A = {"layer": "PAREDES"}
+    ms.add_lwpolyline(_rect_pts(0, 0, 3.0, 0.15), close=True, dxfattribs=A)        # piece 1
+    ms.add_lwpolyline(_rect_pts(3.9, 0, 8.0, 0.15), close=True, dxfattribs=A)      # piece 2: gap 0.9
+    ms.add_lwpolyline(_rect_pts(0, 5.0, 8.0, 5.15), close=True, dxfattribs=A)      # long wall
+    ms.add_lwpolyline([(0, 1), (1, 1), (1, 1.2), (0.2, 1.2), (0.2, 2), (0, 2)],    # an L piece
+                      close=True, dxfattribs=A)
+    ms.add_lwpolyline(_rect_pts(0, 6, 8, 6.4), close=True, dxfattribs={"layer": "MOBILIA"})
+    # nested + mirrored: block INNER holds a wall polygon, block OUTER inserts INNER
+    inner = doc.blocks.new("INNER")
+    inner.add_lwpolyline(_rect_pts(0, 0, 2.0, 0.2), close=True, dxfattribs=A)
+    outer = doc.blocks.new("OUTER")
+    outer.add_blockref("INNER", (0, 0))
+    ms.add_blockref("OUTER", (20, 3), dxfattribs={"xscale": -1.0, "layer": "PAREDES"})   # x in 18..20
+    # hatch-only wall
+    h = ms.add_hatch(dxfattribs={"layer": "PAREDES"})
+    h.paths.add_polyline_path(_rect_pts(10, 0, 10.2, 3), is_closed=True)
+    # column block (named «pilar…»; its polygon sits on layer 0)
+    col = doc.blocks.new("pilar 30x30")
+    col.add_lwpolyline(_rect_pts(-0.15, -0.15, 0.15, 0.15), close=True)
+    ms.add_blockref("pilar 30x30", (12, 1), dxfattribs={"layer": "MOBILIA"})
+    # the door block, centred on the gap (x 3.0..3.9, y 0.075)
+    door = doc.blocks.new("PORTA 80 x 210 cm")
+    door.add_line((-0.4, 0), (0.4, 0)); door.add_arc((-0.4, 0), 0.8, 0, 90)
+    ms.add_blockref("PORTA 80 x 210 cm", (3.45, 0.075), dxfattribs={"layer": "PORTAS"})
+    # a second plan, 30 m up
+    ms.add_lwpolyline(_rect_pts(0, 30, 6, 30.15), close=True, dxfattribs=A)
+    ms.add_lwpolyline(_rect_pts(0, 35, 6, 35.15), close=True, dxfattribs=A)
+    path = tmp_path / name
+    doc.saveas(path)
+    return path
+
+
+def test_the_scan_suggests_wall_layers_by_name(tmp_path):
+    cands = {c["layer"]: c for c in mod.scan_plan(mod.open_plan(_drawing(tmp_path)))}
+    assert cands["PAREDES"]["suggested"] and not cands["MOBILIA"]["suggested"]
+    assert cands["PAREDES"]["count"] == 8              # 3 + L + nested block + hatch + 2 upstairs
+
+
+def test_import_makes_walls_a_door_opening_and_columns_in_one_undo_step(vp, tmp_path):
+    r = mod.import_plan(vp, _drawing(tmp_path), plan=0)
+    assert len(vp.history.undo_stack) == 1
+    assert r["skipped"] == 1                              # the L-shaped piece
+    assert r["doors"] == 1 and r["doors_matched"] == 1 and r["openings"] == 1
+    scene_walls = mod.walls(vp.scene)
+    assert len(scene_walls) == r["walls"] + r["headers"]
+    opened = [g for g in scene_walls if mod.wall_record(g)["openings"]]
+    assert len(opened) == 1
+    o = mod.wall_record(opened[0])["openings"][0]
+    assert o["head"] == 2.1 and o["s1"] - o["s0"] == pytest.approx(0.9, abs=0.01)
+    assert mod.wall_record(opened[0])["thickness"] == pytest.approx(0.15, abs=0.001)
+    assert all(_volume(g) is not None for g in scene_walls)       # closed solids
+    vp.history.undo()
+    assert vp.scene.groups == []
+
+
+def test_the_nested_mirrored_block_the_hatch_and_the_column_land_in_the_right_place(vp, tmp_path):
+    mod.import_plan(vp, _drawing(tmp_path), plan=0, recenter=False)
+    boxes = [_bbox(g) for g in mod.walls(vp.scene)]
+    # nested + mirrored: x from 18 to 20 at y 3..3.2 (the raw points would say 20..22)
+    assert any(abs(b[0] - 18.0) < 0.01 and abs(b[3] - 20.0) < 0.01 and abs(b[1] - 3.0) < 0.01
+               for b in boxes)
+    assert any(abs(b[0] - 10.0) < 0.01 and abs(b[3] - 10.2) < 0.01 for b in boxes)    # hatch
+    assert any(abs(b[0] - 11.85) < 0.01 and abs(b[3] - 12.15) < 0.01 for b in boxes)  # column
+
+
+def test_recenter_puts_the_plan_corner_at_zero_and_remembers_the_shift(vp, tmp_path):
+    r = mod.import_plan(vp, _drawing(tmp_path), plan=0)
+    xs = [min(_bbox(g)[0], _bbox(g)[3]) for g in mod.walls(vp.scene)]
+    ys = [_bbox(g)[1] for g in mod.walls(vp.scene)]
+    assert min(xs) == pytest.approx(0.0, abs=0.01) and min(ys) == pytest.approx(0.0, abs=0.01)
+    rec = vp.scene.plugin_data[mod.KEY]["imports"][-1]
+    assert rec["shift"] == pytest.approx(r["shift"]) and rec["layers"] == ["PAREDES"]
+
+
+def test_two_stacked_plans_are_split_and_each_can_be_chosen(vp, tmp_path):
+    path = _drawing(tmp_path)
+    r0 = mod.import_plan(vp, path, plan=0)
+    assert r0["plans"][0] > r0["plans"][1] == 2           # the 2-wall plan is the second
+    vp2 = FakeViewport()
+    r1 = mod.import_plan(vp2, path, plan=1)
+    assert r1["pieces"] == 2 and r1["shift"][1] == pytest.approx(30.075)   # the axis of the first wall
+    with pytest.raises(mod.BimProtoError):
+        mod.import_plan(FakeViewport(), path, plan=5)
+
+
+def test_a_drawing_without_a_wall_layer_is_refused_and_changes_nothing(vp, tmp_path):
+    import ezdxf
+    doc = ezdxf.new("R2018")
+    doc.modelspace().add_lwpolyline(_rect_pts(0, 0, 1, 1), close=True)
+    with pytest.raises(mod.BimProtoError):
+        mod.import_plan(vp, doc=doc)
+    assert vp.scene.groups == [] and vp.history.undo_stack == []
+    n = mod.import_plan(vp, doc=doc, layers=["0"])        # but the user may name the layer
+    assert n["walls"] == 1
+
+
+def test_a_dwg_goes_through_the_bridge_and_its_temp_file_is_discarded(monkeypatch, tmp_path):
+    import formats.dwg_bridge as bridge
+    dxf = _drawing(tmp_path, "converted.dxf")
+    seen = []
+    monkeypatch.setattr(bridge, "dwg_to_dxf", lambda p: dxf)
+    monkeypatch.setattr(bridge, "discard_temp_dxf", lambda p: seen.append(p))
+    doc = mod.open_plan(tmp_path / "anything.dwg")
+    assert len(mod.scan_plan(doc)) >= 1 and seen == [dxf]
+
+
+def test_the_import_button_runs_the_dialog_result_and_survives_failure(win, tmp_path):
+    live = _live()
+    panel = _panel(win)
+    path = _drawing(tmp_path)
+    panel.ask_import = lambda: None                       # cancelled
+    panel.buttons["import"].click()
+    assert live.walls(win.viewport.scene) == []
+    panel.ask_import = lambda: {"path": path, "layers": ["PAREDES"], "plan": 9}
+    panel.buttons["import"].click()                       # fails politely, no exception
+    assert live.walls(win.viewport.scene) == []
+    panel.ask_import = lambda: {"path": path, "layers": ["PAREDES"], "plan": 0,
+                                "height": 2.5, "door_head": 2.0, "recenter": True}
+    panel.buttons["import"].click()
+    ws = live.walls(win.viewport.scene)
+    assert ws and all(live.wall_record(g)["height"] in (2.5, 0.5) for g in ws)
+    assert any(live.wall_record(g)["openings"] and live.wall_record(g)["openings"][0]["head"] == 2.0
+               for g in ws)
