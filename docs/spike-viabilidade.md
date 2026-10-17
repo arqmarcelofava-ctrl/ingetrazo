@@ -311,7 +311,8 @@ repositório.
 | Esquadrias | `kind: "frame"` em `group.ext`: eixo, `depth`, `height`, `divisions` (centros dos montantes), `mullion`, `panel` (`glass`/`mesh`/`none`), `panel_thickness`, `ifc` (`IfcWindow` ou `IfcRailing`). Sólidos fechados e separados num grupo; `create_frames` em 1 passo; Atualizar 3D também as refaz. |
 | Travessas | `rails: [{z, height}]` na esquadria: peças de montante a montante (1 mm mais rasas por face, para continuarem sólidos fechados); os painéis ficam nos intervalos entre elas. |
 | Peitoril / folha de porta | `kind: "sill"` (laje que sai da face, só nas janelas) e `kind: "leaf"` (folha de porta com `hinge`, `side`, `angle`, folga), criados a partir das `openings` por `create_sills` / `create_leaves` (1 passo, tudo ou nada). Menu «Peitoris (janelas)» e «Folhas de porta». |
-| Atualizar 3D | `update_3d(viewport, alvos=None)`: regenera paredes, esquadrias, peitoris e folhas (seleção, ou todas) de seus registros e dos níveis, **todas num único passo**. |
+| Porta detalhada | `kind: "leaf"` com `style` `swing` (folha de 35 mm que gira em torno da dobradiça; `frame` = marco com dois batentes rebaixados e travessa; `trim` = guarnição nas duas faces; `arc` = arco de giro como arestas) ou `sliding` (porta de correr de vidro: bastidor de 35 mm, montantes de 50 mm, vidro de 10 mm; `open` 0–1). `create_leaves(..., overrides=f)` dá a cada porta o seu lado, a sua dobradiça e o seu tipo. |
+| Atualizar 3D | `update_3d(viewport, alvos=None)`: regenera paredes, esquadrias, peitoris e portas (seleção, ou todas) de seus registros e dos níveis, **todas num único passo**. |
 | Editar + atualizar | `edit_walls(viewport, alvos, **parametros)`: 1 passo, desfaz parâmetros e geometria. |
 | Navegador | `add_outliner_kind` rotula a parede ("Parede", nível, espessura, altura). |
 
@@ -454,9 +455,35 @@ Achados que valem para qualquer planta importada:
     encostada no pé/topo do montante dividia vértices com ele e o volume do grupo
     virava `None`.
 
+12. **Portas detalhadas como no DWG.** Os blocos de porta do DWG de teste trazem, em
+    planta: folha de **35 mm**, **marco** de 35 mm de largura com rebaixo de 10 mm
+    (o batente é mais grosso do lado contra o qual a folha fecha), **guarnição** de
+    60 × 12 mm nas duas faces e o **arco de giro**; o vão da parede (87 cm) é a porta
+    nominal (80 cm) mais os dois marcos (2 × 3,5 cm). O protótipo reproduz isso e lê
+    do desenho o lado e a dobradiça de cada porta (o arco tem a dobradiça no centro e
+    uma ponta sobre a parede). **As 8 aberturas de porta do modelo casam uma a uma
+    com 8 portas do DWG** — 6 de abrir (PM02 80 × 210, PM03 70 × 210) e 2 de correr
+    em vidro (70 e 150 cm, plano a ~11 cm do eixo, como medido). Todas as peças são
+    sólidos fechados (volume conferido nos testes a partir das medidas), 1 passo de
+    desfazer, salvas e reabertas do `.igz`. **Armadilha real:** as coordenadas do
+    modelo são as do DWG deslocadas (−2,2972; +0,0131) — comparar a posição das
+    portas sem o deslocamento dava "nenhuma porta em nenhum vão".
+    Ainda **não**: 6 das 14 portas do DWG (corta-fogo, 3 de shaft de folha dupla e 2
+    de abrir sem vão detectado na alvenaria) não têm abertura no modelo; ferragens
+    (maçaneta, dobradiças) não existem no DWG; a travessa do marco é suposição
+    (a planta só mostra os batentes laterais); as portas ficam **fechadas** (o DWG as
+    desenha abertas a 90°; o arco mostra o giro) e os blocos de correr mostram a
+    folha parcialmente aberta — ficou fechada (`open` 0) para ser coerente.
+
 ### Peitoril e folha aberta (exemplo sintético)
 
 ![Peitoril e folha](images/bim_proto_peitoril_folha.png)
+
+### Portas detalhadas (exemplo sintético)
+
+![Portas em planta](images/bim_proto_portas_planta.png)
+
+![Portas em 3D](images/bim_proto_portas_axo.png)
 
 ### Cantos: antes e depois (exemplo sintético)
 

@@ -34,7 +34,7 @@ GPL-3.0); **nenhum dado real de cliente no repositório**.
 |---|---|
 | Resposta às 6 perguntas de viabilidade, tabela, o que exigiria mudar o núcleo, o que ficou sem verificar | `docs/spike-viabilidade.md` |
 | Protótipo: ferramenta de parede por dois pontos, parâmetros em `group.ext`, níveis em `plugin_data`, **Atualizar 3D** num passo de desfazer, painel «Project» (árvore), importar planta (`wall_from_rectangle`), criação em lote (`create_walls`), vãos de porta (`wall_gaps`), **aberturas de verdade nas paredes** (`openings`, `merge_gap_walls`), **união de cantos** em L/T (`join_walls`, `join_corners`) **esquadrias** de fachada e guarda-corpo com travessas (`kind: "frame"`, `create_frames`), **peitoris** (`create_sills`) e **folhas de porta** (`create_leaves`) | `plugins/bim_proto.py` |
-| Testes (121, todos passam) | `tests/test_bim_proto.py`, `tests/test_spike_viabilidade.py` |
+| Testes (128, todos passam) | `tests/test_bim_proto.py`, `tests/test_spike_viabilidade.py` |
 | Inspeciona qualquer modelo (.igz .glb .skp .dae .obj .stl .dxf .dwg) e desenha planta cortada, frente e axonometria **sem placa de vídeo** | `scripts/inspecionar_modelo.py` |
 | Imagens de exemplo (paredes de teste, janela com o painel) | `docs/images/` |
 
@@ -80,7 +80,10 @@ qualquer planta importada:
    ele trazer a medida real.** Esquadrias da fachada: 4 sistemas (11 montantes) + 3 guarda-corpos reconstruídos
    do DWG; **alturas provisórias suposição do assistente (2,80 m e 1,10 m)**,
    o usuário ainda não confirmou. Travessas (pé, 1,00 m, topo; 5 cm) também supostas.
-   Folhas de porta: 8, fechadas (o sentido de abertura não está no DWG). Peitoris: o DWG
+   Portas: 8 detalhadas como no DWG (marco com rebaixo, guarnição, folha de 35 mm,
+   arco de giro; 2 de correr de vidro), com lado e dobradiça lidos do arco do bloco;
+   ficam fechadas. 6 das 14 portas do DWG (corta-fogo, shafts, 2 de abrir) não têm
+   abertura no modelo. ATENÇÃO: coordenadas do modelo = DWG − (2,2972; −0,0131). Peitoris: o DWG
    não tem janela em parede, então só foram testados com exemplo sintético.
 
 Armadilhas de **desenho** (custaram tempo):
@@ -120,7 +123,7 @@ onde o arquivo está. O que o `.glb` acrescenta ao DWG: mobília, acabamentos e 
    BIM nem níveis).
 6. Use o pé-direito de 2,80 m e as portas de 2,10 m (decisão do usuário, provisória); se ele trouxer a medida real, troque.
 7. Próximos passos de produto, se o usuário quiser: confirmar as alturas das
-   esquadrias, travessas e guarda-corpo; sentido de giro das portas; soleira; tornar o
+   esquadrias, travessas e guarda-corpo; abrir as 6 portas sem vão; soleira; tornar o
    painel «Project» interativo (clique aplica vista / seleciona parede); levar
    base × proposta para dentro do repositório (função sem `shapely`).
 

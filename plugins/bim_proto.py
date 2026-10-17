@@ -604,15 +604,36 @@ def sill_mesh(rec: dict, base_z: float) -> Mesh:
     return mesh
 
 
+#: Porta detalhada (medidas lidas dos blocos de porta de um DWG real; metros).
+LEAF_DETAIL = {"jamb_width": 0.035, "stop_depth": 0.010, "trim_width": 0.06,
+               "trim_thickness": 0.012, "stile": 0.05, "glass_thickness": 0.01}
+
+
 def normalize_leaf(rec: dict) -> dict:
-    """Folha de porta dentro de um vão de parede (``s0``/``s1`` ao longo do eixo
-    ``a``→``b``, ``head`` = topo do vão acima da base). ``hinge`` ``"a"`` ou
-    ``"b"`` diz de que lado fica a dobradiça; ``side`` (+1 esquerda do eixo, −1
-    direita) para onde ela abre; ``angle`` em graus (0 = fechada);
-    ``clearance`` é a folga em volta (chão, topo e laterais)."""
+    """Porta dentro de um vão de parede (``s0``/``s1`` ao longo do eixo
+    ``a``→``b``, ``head`` = topo do vão acima da base).
+
+    ``style``:
+
+    * ``"swing"`` (padrão): folha maciça de ``thickness`` que gira em torno da
+      dobradiça; ``hinge`` ``"a"``/``"b"`` é o lado da dobradiça, ``side`` (+1
+      esquerda do eixo, −1 direita) para onde abre, ``angle`` em graus (0 =
+      fechada), ``clearance`` a folga em volta. Com ``frame`` verdadeiro leva
+      MARCO (dois batentes com rebaixo ``stop_depth`` para a folha encostar e
+      uma travessa em cima, de largura ``jamb_width``); com ``trim`` leva
+      GUARNIÇÃO (alizar de ``trim_width`` x ``trim_thickness`` nas duas faces
+      da parede); com ``arc`` desenha o arco de giro como arestas.
+    * ``"sliding"``: porta de correr de vidro: um bastidor (montantes de
+      ``stile`` e travessas) de ``thickness`` com vidro de ``glass_thickness``;
+      ``open`` (0 a 1) é quanto correu para o lado ``hinge`` (onde estaciona).
+
+    ``wall_thickness`` é a espessura da parede (profundidade do marco e posição
+    da guarnição); ``t_offset`` desloca o plano da porta do eixo da parede."""
+    d = LEAF_DETAIL
     try:
         out = _common(rec, {
             "kind": "leaf",
+            "style": str(rec.get("style", "swing")),
             "s0": float(min(rec["s0"], rec["s1"])),
             "s1": float(max(rec["s0"], rec["s1"])),
             "head": float(rec["head"]),
@@ -621,52 +642,149 @@ def normalize_leaf(rec: dict) -> dict:
             "side": int(rec.get("side", 1)),
             "angle": float(rec.get("angle", 0.0)),
             "clearance": float(rec.get("clearance", 0.01)),
+            "frame": bool(rec.get("frame", False)),
+            "trim": bool(rec.get("trim", False)),
+            "arc": bool(rec.get("arc", False)),
+            "wall_thickness": float(rec.get("wall_thickness", 0.15)),
+            "t_offset": float(rec.get("t_offset", 0.0)),
+            "open": float(rec.get("open", 0.0)),
+            **{k: float(rec.get(k, v)) for k, v in d.items()},
         })
     except (KeyError, TypeError, ValueError) as exc:
-        raise BimProtoError(f"bad door leaf record: {exc}") from exc
+        raise BimProtoError(f"bad door record: {exc}") from exc
     _, _, _, length = _axis_frame(out)
     nums = out["a"] + out["b"] + [out[k] for k in (
-        "s0", "s1", "head", "thickness", "angle", "clearance", "base_offset")]
+        "s0", "s1", "head", "thickness", "angle", "clearance", "base_offset",
+        "wall_thickness", "t_offset", "open", *d)]
     if not all(math.isfinite(v) for v in nums):
-        raise BimProtoError("non-finite value in the door leaf record")
+        raise BimProtoError("non-finite value in the door record")
+    if out["style"] not in ("swing", "sliding"):
+        raise BimProtoError("style must be 'swing' or 'sliding'")
     if out["hinge"] not in ("a", "b") or out["side"] not in (-1, 1):
         raise BimProtoError("hinge must be 'a' or 'b' and side 1 or -1")
     if not 0.0 <= out["angle"] <= 150.0:
         raise BimProtoError("angle must be between 0 and 150 degrees")
+    if not 0.0 <= out["open"] <= 1.0:
+        raise BimProtoError("open must be between 0 and 1")
     c = out["clearance"]
-    if c < 0 or out["thickness"] <= _EPS \
-            or out["s1"] - out["s0"] <= 2 * c + _EPS \
-            or out["head"] <= 2 * c + _EPS:
-        raise BimProtoError("the door leaf does not fit its opening")
+    jw = out["jamb_width"] if out["frame"] else 0.0
+    if c < 0 or out["thickness"] <= _EPS or out["wall_thickness"] <= _EPS \
+            or min(d.values()) < 0 \
+            or out["s1"] - out["s0"] <= 2 * (c + jw) + _EPS \
+            or out["head"] <= 2 * (c + jw) + _EPS:
+        raise BimProtoError("the door does not fit its opening")
+    if out["frame"] and out["thickness"] > out["wall_thickness"] - _EPS:
+        raise BimProtoError("the leaf cannot be thicker than the wall")
     if out["s0"] < -_EPS or out["s1"] > length + _EPS:
         raise BimProtoError("the opening must lie inside the wall's length")
+    if out["style"] == "sliding" and (out["stile"] * 2 >= out["s1"] - out["s0"]
+                                      or out["glass_thickness"] >= out["thickness"]):
+        raise BimProtoError("the sash is too small for its stiles or glass")
     return out
 
 
+def _ccw(loop):
+    area2 = sum(loop[i][0] * loop[(i + 1) % len(loop)][1]
+                - loop[(i + 1) % len(loop)][0] * loop[i][1]
+                for i in range(len(loop)))
+    return loop if area2 > 0 else loop[::-1]
+
+
 def leaf_mesh(rec: dict, base_z: float) -> Mesh:
-    """A folha é um prisma de ``thickness`` girado ``angle`` em torno da
-    dobradiça (eixo vertical) para o lado ``side``."""
+    """Veja :func:`normalize_leaf`. Cada peça (folha, batentes, travessa,
+    guarnições, montantes, vidro) é um sólido fechado e separado."""
     origin, u, n, _ = _axis_frame(rec)
-    c = rec["clearance"]
-    width = rec["s1"] - rec["s0"] - 2 * c
-    d = 1.0 if rec["hinge"] == "a" else -1.0
-    hinge_s = rec["s0"] + c if rec["hinge"] == "a" else rec["s1"] - c
-    th = math.radians(rec["angle"])
-    e_s = (d * math.cos(th), rec["side"] * math.sin(th))      # ao longo da folha
-    e_t = (-e_s[1], e_s[0])                                   # espessura
-    half = rec["thickness"] / 2.0
-    foot_st = []
-    for x, tt in ((0, -half), (width, -half), (width, half), (0, half)):
-        foot_st.append((hinge_s + e_s[0] * x + e_t[0] * tt,
-                        e_s[1] * x + e_t[1] * tt))
-    foot = [(origin[0] + u[0] * s_ + n[0] * t_, origin[1] + u[1] * s_ + n[1] * t_)
-            for s_, t_ in foot_st]
-    area2 = sum(foot[i][0] * foot[(i + 1) % 4][1] - foot[(i + 1) % 4][0] * foot[i][1]
-                for i in range(4))
-    if area2 < 0:
-        foot.reverse()
     mesh = Mesh()
-    _add_prism(mesh, foot, base_z + c, base_z + rec["head"] - c)
+    z0 = base_z
+    c = rec["clearance"]
+    side, hinge = rec["side"], rec["hinge"]
+    head = rec["head"]
+    D, lt, off = rec["wall_thickness"], rec["thickness"], rec["t_offset"]
+    jw = 0.0
+    def world(s_, t_):
+        return (origin[0] + u[0] * s_ + n[0] * t_, origin[1] + u[1] * s_ + n[1] * t_)
+
+    def plan_prism(loop_st, za, zb):
+        _add_prism(mesh, _ccw([world(s_, t_) for s_, t_ in loop_st]), za, zb)
+
+    if rec["style"] == "sliding":
+        st, glt = rec["stile"], rec["glass_thickness"]
+        width = rec["s1"] - rec["s0"]
+        shift = (-1.0 if hinge == "a" else 1.0) * rec["open"] * width
+        sa, sb = rec["s0"] + shift + c, rec["s1"] + shift - c
+        ta, tb = off - lt / 2, off + lt / 2
+        za, zb = z0 + c, z0 + head - c
+        plan_prism([(sa, ta), (sa + st, ta), (sa + st, tb), (sa, tb)], za, zb)
+        plan_prism([(sb - st, ta), (sb, ta), (sb, tb), (sb - st, tb)], za, zb)
+        # travessas de montante a montante, 1 mm mais rasas (nada divide vértice)
+        r = _RAIL_RECESS
+        for zr0, zr1 in ((za, za + st), (zb - st, zb)):
+            plan_prism([(sa + st, ta + r), (sb - st, ta + r),
+                        (sb - st, tb - r), (sa + st, tb - r)], zr0, zr1)
+        plan_prism([(sa + st, off - glt / 2), (sb - st, off - glt / 2),
+                    (sb - st, off + glt / 2), (sa + st, off + glt / 2)],
+                   za + st, zb - st)
+        return mesh
+
+    if rec["frame"]:
+        jw, sd = rec["jamb_width"], rec["stop_depth"]
+        # perfil do batente em (k para dentro do vão, x para o lado de abrir):
+        # a parte do lado contrário ao giro leva o rebaixo ``sd``
+        prof = [(0, -D / 2), (0, D / 2), (jw, D / 2), (jw, D / 2 - lt),
+                (jw + sd, D / 2 - lt), (jw + sd, -D / 2)]
+        for edge, d_in in ((rec["s0"], 1.0), (rec["s1"], -1.0)):
+            plan_prism([(edge + d_in * k, off + side * x) for k, x in prof],
+                       z0, z0 + head)
+        # travessa de cima: o mesmo perfil, em duas caixas (parte do rebaixo,
+        # mais baixa e mais curta; parte da folha), 1 mm abaixo do topo do vão
+        # para não dividir vértice com os batentes
+        r = _RAIL_RECESS
+        x_step = D / 2 - lt
+        for (xa, xb), drop, s_in in (((-D / 2, x_step), jw + sd, jw + sd),
+                                     ((x_step, D / 2), jw, jw)):
+            ta, tb = sorted((off + side * xa, off + side * xb))
+            _add_box(mesh, origin, u, n, rec["s0"] + s_in, rec["s1"] - s_in,
+                     ta, tb, z0 + head - drop, z0 + head - r)
+    if rec["trim"]:
+        tw, tt = rec["trim_width"], rec["trim_thickness"]
+        ext = jw - tw                              # a guarnição passa do vão
+        faces = ((D / 2, D / 2 + tt), (-D / 2 - tt, -D / 2))
+        for edge, d_in in ((rec["s0"], 1.0), (rec["s1"], -1.0)):
+            for xa, xb in faces:
+                ta, tb = sorted((off + side * xa, off + side * xb))
+                sa, sb = sorted((edge + d_in * (jw - _RAIL_RECESS), edge + d_in * ext))
+                plan_prism([(sa, ta), (sb, ta), (sb, tb), (sa, tb)],
+                           z0, z0 + head - jw - _RAIL_RECESS)
+        for xa, xb in faces:                       # guarnição de cima
+            ta, tb = sorted((off + side * xa, off + side * xb))
+            sa, sb = rec["s0"] + ext, rec["s1"] - ext
+            plan_prism([(sa, ta), (sb, ta), (sb, tb), (sa, tb)],
+                       z0 + head - jw, z0 + head - jw + tw)
+
+    # folha: gira em torno da dobradiça, que fica entre os batentes
+    clear = rec["s1"] - rec["s0"] - 2 * jw
+    width = clear - 2 * c
+    d = 1.0 if hinge == "a" else -1.0
+    hinge_s = rec["s0"] + jw + c if hinge == "a" else rec["s1"] - jw - c
+    th = math.radians(rec["angle"])
+    e_s = (d * math.cos(th), side * math.sin(th))             # ao longo da folha
+    e_t = (-e_s[1], e_s[0])                                   # espessura
+    # fechada, a folha fica no vão do lado do giro, junto ao rebaixo
+    t_mid = off + side * (D / 2 - lt / 2) if rec["frame"] else off
+    foot = []
+    for x, tt in ((0, -lt / 2), (width, -lt / 2), (width, lt / 2), (0, lt / 2)):
+        foot.append((hinge_s + e_s[0] * x + e_t[0] * tt,
+                     t_mid + e_s[1] * x + e_t[1] * tt))
+    plan_prism(foot, z0 + c, z0 + head - jw - c)
+    if rec["arc"]:                                           # símbolo do arco de giro
+        steps, zr = 24, z0 + 0.002
+        pts = []
+        for i in range(steps + 1):
+            a_ = math.pi / 2 * i / steps
+            pts.append(world(hinge_s + d * width * math.cos(a_),
+                             t_mid + side * width * math.sin(a_)))
+        for p, q in zip(pts, pts[1:]):
+            mesh.add_edge(QVector3D(p[0], p[1], zr), QVector3D(q[0], q[1], zr))
     return mesh
 
 
@@ -722,21 +840,35 @@ def create_sills(viewport, targets=None, *, thickness=0.03, projection=0.05,
     """Um peitoril para cada JANELA (abertura com ``sill`` > 0) das paredes
     ``targets`` (ou de todas) — um único passo de desfazer, tudo ou nada.
     Devolve os grupos criados, ou ``[]``."""
-    return _create_from_openings(viewport, targets, "sill", lambda w, o: {
+    return _create_from_openings(viewport, targets, "sill", lambda w, o, idx: {
         "z": o["sill"], "s0": o["s0"], "s1": o["s1"],
         "wall_thickness": w["thickness"], "thickness": thickness,
         "projection": projection, "overhang": overhang, "side": side},
         lambda o: o["sill"] > _EPS)
 
 
-def create_leaves(viewport, targets=None, *, thickness=0.04, hinge="a",
-                  side=1, angle=0.0, clearance=0.01) -> list:
-    """Uma folha de porta para cada PORTA (abertura com ``sill`` 0) das paredes
-    ``targets`` (ou de todas) — um único passo de desfazer, tudo ou nada."""
-    return _create_from_openings(viewport, targets, "leaf", lambda w, o: {
-        "head": o["head"], "s0": o["s0"], "s1": o["s1"], "thickness": thickness,
-        "hinge": hinge, "side": side, "angle": angle, "clearance": clearance},
-        lambda o: o["sill"] <= _EPS)
+def create_leaves(viewport, targets=None, *, overrides=None, **params) -> list:
+    """Uma porta para cada ABERTURA DE PORTA (``sill`` 0) das paredes ``targets``
+    (ou de todas) — um único passo de desfazer, tudo ou nada.
+
+    ``params`` são campos do registro (veja :func:`normalize_leaf`: ``style``,
+    ``thickness``, ``hinge``, ``side``, ``angle``, ``clearance``, ``frame``,
+    ``trim``, ``arc``, ``open``…) e valem para todas. ``overrides(parede,
+    índice, abertura)`` pode devolver um dict com campos só daquela porta (ou
+    ``None``) — é como cada porta de uma planta ganha o seu lado e o seu tipo."""
+    base = {"thickness": 0.04, "hinge": "a", "side": 1, "angle": 0.0,
+            "clearance": 0.01}
+    base.update(params)
+
+    def extra(w, o, idx=0):
+        rec = dict(base, head=o["head"], s0=o["s0"], s1=o["s1"],
+                   wall_thickness=w["thickness"])
+        if overrides is not None:
+            rec.update(overrides(w, idx, o) or {})
+        return rec
+
+    return _create_from_openings(viewport, targets, "leaf", extra,
+                                 lambda o: o["sill"] <= _EPS)
 
 
 def _create_from_openings(viewport, targets, kind, extra, wanted) -> list:
@@ -746,10 +878,10 @@ def _create_from_openings(viewport, targets, kind, extra, wanted) -> list:
     jobs = []
     for g in todo:
         w = wall_record(g)
-        for o in w.get("openings") or []:
+        for idx, o in enumerate(w.get("openings") or []):
             if wanted(o):
-                jobs.append(dict(extra(w, o), a=w["a"], b=w["b"],
-                                 level=w["level"],
+                fields = extra(w, o, idx)
+                jobs.append(dict(fields, a=w["a"], b=w["b"], level=w["level"],
                                  base_offset=w.get("base_offset", 0.0)))
     if not jobs:
         return []

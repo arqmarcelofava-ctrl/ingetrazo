@@ -87,4 +87,17 @@ bp.create_sills(vp, projection=0.08, side=-1)
 bp.create_leaves(vp, angle=70, hinge="a", side=-1)
 img = desenhar(vp, yaw=-30, pitch=18, centro=(2.5, 0, 1.2), dist=30, titulo="Janela com peitoril e porta com folha aberta a 70°", W=700, H=560)
 img.save(str(out / "bim_proto_peitoril_folha.png"))
+# --- portas detalhadas (medidas lidas de um DWG real): marco com rebaixo, guarnição,
+# folha de 35 mm, arco de giro; e porta de correr de vidro
+vp = novo()
+bp.create_walls(vp, [{"a": [0, 0], "b": [5, 0], "thickness": 0.12, "openings": [
+    {"s0": 0.6, "s1": 1.47, "sill": 0.0, "head": 2.1}, {"s0": 3.2, "s1": 3.9, "sill": 0.0, "head": 2.1}]}])
+bp.create_leaves(vp, frame=True, trim=True, arc=True, thickness=0.035, clearance=0.002, side=-1, hinge="b",
+                 overrides=lambda w, i, o: {"style": "sliding", "t_offset": 0.0, "arc": False, "frame": False, "trim": False} if i == 1 else None)
+img = desenhar(vp, yaw=-90, pitch=89.9, centro=(2.5, -0.5, 0), dist=20, corte=1.2, W=1000, H=420,
+               titulo="Planta a 1,20 m: marco com rebaixo, guarnição, folha e arco de giro; porta de correr")
+img.save(str(out / "bim_proto_portas_planta.png"))
+img = desenhar(vp, yaw=-25, pitch=22, centro=(2.5, 0, 1.0), dist=30, W=1000, H=620,
+               titulo="Porta de abrir detalhada e porta de correr de vidro")
+img.save(str(out / "bim_proto_portas_axo.png"))
 print("ok")

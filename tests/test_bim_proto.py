@@ -1074,3 +1074,116 @@ def test_sills_and_leaves_are_rebuilt_by_update_3d_and_survive_reopening(vp, tmp
     back = [g for g in sc.groups if mod.element_record(g)["kind"] == "leaf"][0]
     assert mod.element_record(back)["angle"] == 45
     assert _volume(back) == pytest.approx(_volume(lf), rel=1e-4)
+
+
+# ---- detailed doors: frame, trim, swing arc, sliding glass ------------------------------
+
+DOOR = {"style": "swing", "frame": True, "trim": True, "arc": True,
+        "thickness": 0.035, "clearance": 0.002}
+
+
+def _door_wall(vp, wall_t=0.12, s0=1.0, s1=1.87, head=2.1):
+    return mod.create_walls(vp, [{"a": [0, 0], "b": [4, 0], "thickness": wall_t,
+                                  "openings": [{"s0": s0, "s1": s1, "sill": 0.0,
+                                                "head": head}]}])[0]
+
+
+def test_a_framed_door_is_closed_solids_with_the_measured_volume(vp):
+    _door_wall(vp)
+    (d,) = mod.create_leaves(vp, **DOOR)
+    D, lt, jw, sd, r, c = 0.12, 0.035, 0.035, 0.010, 1e-3, 0.002
+    prof = lt * jw + (D - lt) * (jw + sd)
+    jambs = 2 * prof * 2.1
+    head = (D - lt) * (0.87 - 2 * (jw + sd)) * (jw + sd - r) \
+        + lt * (0.87 - 2 * jw) * (jw - r)
+    trims = 4 * (jw - r + 0.025) * 0.012 * (2.1 - jw - r) \
+        + 2 * (0.87 + 0.05) * 0.012 * 0.06
+    leaf = (0.87 - 2 * jw - 2 * c) * lt * (2.1 - jw - 2 * c)
+    assert _volume(d) == pytest.approx(jambs + head + trims + leaf, rel=1e-4)
+    assert d.ifc["class"] == "IfcDoor"
+
+
+def test_the_leaf_closes_against_the_rebate_on_the_swing_side(vp):
+    _door_wall(vp)
+    (d,) = mod.create_leaves(vp, **DOOR)           # side +1, hinge a, closed
+    leaf_pts = [v.position for v in d.mesh.vertices
+                if 0.9 < v.position.x() < 1.95 and 0.0 < v.position.z() < 2.1
+                and abs(v.position.y() - 0.0425) < 0.0006 + 0.0175]
+    ys = sorted({round(p.y(), 4) for p in leaf_pts})
+    assert 0.025 in ys and 0.06 in ys              # leaf: D/2 - 0.035 .. D/2
+
+
+def test_the_swing_arc_is_drawn_as_edges_and_adds_no_faces(vp):
+    _door_wall(vp)
+    (plain,) = mod.create_leaves(vp, **dict(DOOR, arc=False))
+    (arc,) = mod.create_leaves(vp, **DOOR)
+    assert len(arc.mesh.edges) - len(plain.mesh.edges) == 24
+    assert len(arc.mesh.faces) == len(plain.mesh.faces)
+
+
+def test_a_door_opened_90_degrees_swings_on_its_hinge_side(vp):
+    _door_wall(vp)
+    (d,) = mod.create_leaves(vp, **dict(DOOR, angle=90, side=-1, hinge="b",
+                                        frame=False, trim=False, arc=False))
+    x0, y0, _, x1, y1, _ = _bbox(d)
+    assert x0 == pytest.approx(1.87 - 0.002 - 0.0175) and x1 == pytest.approx(1.87 - 0.002 + 0.0175)
+    assert y0 == pytest.approx(-0.87 + 0.004, abs=0.03) and y1 <= 0.0176
+
+
+def test_a_sliding_glass_door_has_a_sash_with_glass(vp):
+    _door_wall(vp, wall_t=0.15, s0=1.0, s1=1.7)
+    (d,) = mod.create_leaves(vp, style="sliding", thickness=0.035, clearance=0.002,
+                             t_offset=-0.0925 + 0.0)
+    st, c, gl = 0.05, 0.002, 0.01
+    w, h = 0.70 - 2 * c, 2.1 - 2 * c
+    expect = 2 * st * h * 0.035 + 2 * (w - 2 * st) * st * (0.035 - 2e-3) \
+        + (w - 2 * st) * (h - 2 * st) * gl
+    assert _volume(d) == pytest.approx(expect, rel=1e-4)
+    _, y0, _, _, y1, _ = _bbox(d)
+    assert (y0, y1) == pytest.approx((-0.11, -0.075))      # as measured in the DWG
+
+
+def test_a_sliding_door_parks_to_the_hinge_side_when_open(vp):
+    _door_wall(vp, wall_t=0.15, s0=1.0, s1=1.7)
+    (d,) = mod.create_leaves(vp, style="sliding", thickness=0.035, clearance=0.0,
+                             open=0.5, hinge="a")
+    x0, _, _, x1, _, _ = _bbox(d)
+    assert (x0, x1) == pytest.approx((0.65, 1.35))
+
+
+def test_each_door_can_have_its_own_side_and_type(vp):
+    mod.create_walls(vp, [{"a": [0, 0], "b": [8, 0], "thickness": 0.12, "openings": [
+        {"s0": 1.0, "s1": 1.87, "sill": 0.0, "head": 2.1},
+        {"s0": 4.0, "s1": 4.7, "sill": 0.0, "head": 2.1}]}])
+    made = mod.create_leaves(vp, frame=True, clearance=0.002, overrides=lambda w, i, o: (
+        {"style": "sliding", "thickness": 0.035} if i == 1 else {"side": -1}))
+    recs = [mod.element_record(g) for g in made]
+    assert [r["style"] for r in recs] == ["swing", "sliding"]
+    assert recs[0]["side"] == -1
+
+
+@pytest.mark.parametrize("bad", [
+    {"style": "revolving"}, {"open": 1.5}, {"frame": True, "jamb_width": 0.5},
+    {"frame": True, "thickness": 0.5}, {"style": "sliding", "stile": 0.5},
+    {"style": "sliding", "glass_thickness": 0.2}])
+def test_bad_door_details_are_refused(vp, bad):
+    _door_wall(vp)
+    n = len(vp.scene.groups)
+    assert mod.create_leaves(vp, **bad) == []
+    assert len(vp.scene.groups) == n
+
+
+def test_detailed_doors_survive_save_reopen_and_update_3d(vp, tmp_path):
+    _door_wall(vp)
+    (d,) = mod.create_leaves(vp, **DOOR)
+    good = _geom(d)
+    d.mesh = mod.Mesh()
+    mod.update_3d(vp)
+    assert _geom(d) == good
+    igz.save_scene(vp.scene, tmp_path / "d.igz")
+    sc = Scene()
+    igz.load_into(sc, tmp_path / "d.igz")
+    back = [g for g in sc.groups if mod.element_record(g)["kind"] == "leaf"][0]
+    rec = mod.element_record(back)
+    assert rec["frame"] and rec["trim"] and rec["arc"] and rec["jamb_width"] == 0.035
+    assert _volume(back) == pytest.approx(_volume(d), rel=1e-4)
