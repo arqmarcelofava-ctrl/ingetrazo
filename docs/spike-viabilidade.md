@@ -39,7 +39,7 @@ dela é movido. A lista completa está na seção 3.
 | 5 | Regenerar a geometria 3D a partir de parâmetros guardados, num passo de desfazer | **SIM** | Padrão do Windowizer, provado em `plugins/bim_proto.py`; o núcleo não avisa quando o objeto é movido. |
 | 6 | Acrescentar prancha ou modelo de página ao compositor e exportar PDF ou SVG | **PARCIAL** | Prancha: sim (dados públicos). Modelo: só por arquivo JSON. PDF: só por caminho privado. SVG: não existe. |
 
-As evidências executáveis estão em `tests/test_bim_proto.py` (42 testes) e
+As evidências executáveis estão em `tests/test_bim_proto.py` (53 testes) e
 `tests/test_spike_viabilidade.py` (7 testes); cada afirmação abaixo diz qual
 teste a sustenta, quando há.
 
@@ -305,6 +305,7 @@ repositório.
 | Parâmetros da parede | `group.ext["bim_proto"] = {kind, a, b, thickness, height, level, base_offset}` — por objeto, no `.igz`. |
 | Níveis | `scene.plugin_data["bim_proto"]["levels"] = [{id, name, z}]` — do projeto, no `.igz`. Sempre existe `PB`. |
 | Geometria | derivada: prisma fechado (6 faces, normais para fora), `z = z(nível) + base_offset`. Volume = comprimento × espessura × altura (teste). Etiqueta `IfcWall` via `core.bim.tag_group`. |
+| Vãos | `wall_gaps(registros)`: acha as lacunas de porta entre trechos alinhados; a verga é `create_walls(..., base_offset=altura_da_porta)`. |
 | Importar planta | `wall_from_rectangle(pontos)` (retângulo em qualquer orientação → eixo + espessura) e `create_walls(viewport, registros)`: lote em **1 passo** de desfazer. |
 | Atualizar 3D | `update_3d(viewport, alvos=None)`: regenera paredes (seleção, ou todas) de seus registros e dos níveis, **todas num único passo**. |
 | Editar + atualizar | `edit_walls(viewport, alvos, **parametros)`: 1 passo, desfaz parâmetros e geometria. |
@@ -317,7 +318,7 @@ pip install -r requirements.txt           # nenhuma dependência nova
 QT_QPA_PLATFORM=offscreen python -m pytest tests/test_bim_proto.py tests/test_spike_viabilidade.py
 ```
 
-Resultado nesta sessão: **49 passaram**. Além disso, rodei a seleção
+Resultado nesta sessão: **60 passaram**. Além disso, rodei a seleção
 `-k "plugin or extension or shortcut or bundle or spec or deferred or menu"`
 da suíte inteira (carregador, atalhos, menu Extensões, plugins empacotados):
 387 passaram, 1 ignorado. **Não rodei a suíte completa** (5 mil testes).
@@ -392,8 +393,19 @@ Achados que valem para qualquer planta importada:
 6. **Falta resolver encontros.** As peças do DWG já vêm cortadas nos encontros
    (por isso fecham), mas o protótipo continua sem resolver T/L entre paredes
    desenhadas por eixo (achado das imagens acima).
-7. Portas e vidros existem no DWG como blocos em camadas próprias; **vãos não
-   foram reconstruídos** — é o próximo passo natural (face com furo).
+7. **Vãos de porta, reconstruídos como lacunas.** Uma planta desenha a porta
+   fazendo a parede parar e recomeçar. `wall_from_rectangle` + `wall_gaps`
+   acham essas lacunas (trechos paralelos, eixos alinhados, folga de 0,45 a
+   2,70 m, sem outra parede dentro) e `create_walls` com `base_offset` fecha o
+   vão por cima com uma **verga**. No DWG de teste, 32 lacunas candidatas; **12
+   das 18 portas** do desenho ligaram a uma lacuna, e a largura do vão bate com a
+   da porta (porta de 0,80 m → vão de 0,87 m; 0,70 m → 0,77 m). As outras 6 são
+   portas de shaft, de correr em vidro e uma "mimetizada", sem lacuna na alvenaria.
+   O nome do bloco da porta (Revit) traz a largura e a altura ("80 x 210 cm").
+8. **Ainda não é um furo paramétrico.** A verga é uma parede baixa sobre o vão;
+   mudar a largura da porta não regenera nada. Esquadrias de fachada (montantes
+   e painéis), peitoris e guarda-corpos não foram reconstruídos. O passo seguinte
+   é uma parede **com furo** (`Face.hole_loops`, como o Windowizer faz).
 
 ### Inspecionar um modelo grande (`scripts/inspecionar_modelo.py`)
 

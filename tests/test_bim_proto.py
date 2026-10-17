@@ -507,3 +507,67 @@ def test_one_bad_record_cancels_the_whole_batch(vp):
     assert mod.create_walls(vp, [good, bad]) == []
     assert vp.scene.groups == [] and vp.history.undo_stack == []
     assert vp.history.last_error
+
+
+# ---- openings between aligned wall pieces ---------------------------------------------
+
+def _w(a, b, t=0.15):
+    return {"a": list(a), "b": list(b), "thickness": t}
+
+
+def test_two_aligned_pieces_with_a_door_sized_gap_make_one_opening():
+    gaps = mod.wall_gaps([_w((0, 0), (2, 0)), _w((2.9, 0), (5, 0))])
+    assert len(gaps) == 1
+    g = gaps[0]
+    assert g["width"] == pytest.approx(0.9)
+    assert g["a"] == pytest.approx([2.0, 0.0]) and g["b"] == pytest.approx([2.9, 0.0])
+    assert g["between"] == (0, 1)
+
+
+def test_the_opening_is_found_whatever_the_direction_and_order():
+    for a, b in (((0, 0), (2, 0)), ((2, 0), (0, 0))):
+        gaps = mod.wall_gaps([_w((2.9, 0), (5, 0)), _w(a, b)])
+        assert len(gaps) == 1 and gaps[0]["width"] == pytest.approx(0.9)
+
+
+def test_a_diagonal_opening_and_different_thickness():
+    import math
+    c, s = math.cos(math.radians(37)), math.sin(math.radians(37))
+    gaps = mod.wall_gaps([_w((0, 0), (2 * c, 2 * s), 0.12),
+                          _w((2.8 * c, 2.8 * s), (5 * c, 5 * s), 0.2)])
+    assert len(gaps) == 1
+    assert gaps[0]["width"] == pytest.approx(0.8)
+    assert gaps[0]["thickness"] == pytest.approx(0.2)
+
+
+@pytest.mark.parametrize("other", [
+    _w((2.9, 0.5), (5, 0.5)),        # parallel but not on the same line
+    _w((2.9, 0), (2.9, 3)),          # not parallel
+    _w((1.9, 0), (5, 0)),            # overlaps the first piece
+    _w((6.5, 0), (9, 0)),            # gap far too big for a door
+    _w((2.1, 0), (5, 0)),            # gap too small to be one
+])
+def test_no_opening_when_the_pieces_do_not_make_one(other):
+    assert mod.wall_gaps([_w((0, 0), (2, 0)), other]) == []
+
+
+def test_a_crossing_wall_inside_the_gap_is_a_junction_not_an_opening():
+    tee = [_w((0, 0), (2, 0)), _w((2.9, 0), (5, 0)), _w((2.45, -2), (2.45, 2))]
+    assert mod.wall_gaps(tee) == []
+
+
+def test_a_header_over_the_opening_goes_up_with_base_offset(vp):
+    pieces = [_w((0, 0), (2, 0)), _w((2.9, 0), (5, 0))]
+    mod.create_walls(vp, pieces, height=2.8)
+    g = mod.wall_gaps(pieces)[0]
+    head = mod.create_walls(vp, [g], height=0.7, base_offset=2.1)
+    _, _, z0, x1, _, z1 = _bbox(head[0])
+    assert (z0, z1) == pytest.approx((2.1, 2.8))
+    assert (_bbox(head[0])[0], x1) == pytest.approx((2.0, 2.9))
+    assert len(vp.history.undo_stack) == 2                 # walls, then headers
+
+
+def test_a_stub_shorter_than_a_wall_does_not_make_an_opening():
+    stub = [_w((0, 0), (2, 0)), _w((2.9, 0), (3.0, 0))]       # 10 cm piece
+    assert mod.wall_gaps(stub) == []
+    assert len(mod.wall_gaps(stub, min_piece=0.05)) == 1

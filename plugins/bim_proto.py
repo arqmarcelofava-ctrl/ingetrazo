@@ -349,6 +349,76 @@ def wall_from_rectangle(points, min_fill: float = 0.97) -> dict:
             "thickness": t1 - t0}
 
 
+def wall_gaps(records, min_gap: float = 0.45, max_gap: float = 2.7,
+              parallel_tol: float = 0.02, min_piece: float = 0.25) -> list:
+    """Vãos entre trechos de parede ALINHADOS: dois registros paralelos, com os
+    eixos sobre a mesma reta (a folga perpendicular cabe na espessura), e uma
+    folga de ``min_gap`` a ``max_gap`` metros entre as pontas. É assim que uma
+    planta desenha uma porta: a parede simplesmente para e recomeça. Não conta
+    como vão uma folga que tenha OUTRA parede dentro (um encontro em T), nem
+    um trecho menor que ``min_piece`` (uma ponta, não uma parede).
+
+    Devolve ``[{"a", "b", "width", "thickness", "between": (i, j)}]``, com
+    ``a``/``b`` as duas bordas do vão sobre o eixo. Para fechar o vão por cima
+    (verga) ou por baixo (peitoril): ``create_walls`` com ``base_offset`` e
+    ``height`` — um vão ainda não é um furo paramétrico na parede."""
+    recs = [(r["a"], r["b"], r["thickness"]) for r in records]
+
+    def frame(a, b):
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        length = math.hypot(dx, dy)
+        return dx / length, dy / length, length
+
+    def inside_other(p, skip):
+        for k, (a, b, th) in enumerate(recs):
+            if k in skip:
+                continue
+            ux, uy, length = frame(a, b)
+            s_ = (p[0] - a[0]) * ux + (p[1] - a[1]) * uy
+            t_ = -(p[0] - a[0]) * uy + (p[1] - a[1]) * ux
+            if -0.02 <= s_ <= length + 0.02 and abs(t_) <= th / 2 + 0.02:
+                return True
+        return False
+
+    gaps = []
+    for i, (ai, bi, thi) in enumerate(recs):
+        ux, uy, li = frame(ai, bi)
+        if li < min_piece:
+            continue
+        for j in range(i + 1, len(recs)):
+            aj, bj, thj = recs[j]
+            vx, vy, lj = frame(aj, bj)
+            if lj < min_piece or abs(ux * vy - uy * vx) > parallel_tol:
+                continue
+
+            def st(p):
+                return ((p[0] - ai[0]) * ux + (p[1] - ai[1]) * uy,
+                        -(p[0] - ai[0]) * uy + (p[1] - ai[1]) * ux)
+            sa, ta = st(aj)
+            sb, tb = st(bj)
+            if abs((ta + tb) / 2) > max(thi, thj) / 2:
+                continue                                    # eixos não alinhados
+            lo_j, hi_j = sorted((sa, sb))
+            if lo_j >= li:
+                lo, hi = li, lo_j
+            elif hi_j <= 0.0:
+                lo, hi = hi_j, 0.0
+            else:
+                continue                                    # trechos que se sobrepõem
+            width = hi - lo
+            if not min_gap <= width <= max_gap:
+                continue
+            mid = ((lo + hi) / 2)
+            mid_pt = (ai[0] + ux * mid, ai[1] + uy * mid)
+            if inside_other(mid_pt, {i, j}):
+                continue
+            gaps.append({"a": [ai[0] + ux * lo, ai[1] + uy * lo],
+                         "b": [ai[0] + ux * hi, ai[1] + uy * hi],
+                         "width": width, "thickness": max(thi, thj),
+                         "between": (i, j)})
+    return gaps
+
+
 def create_walls(viewport, records, *, height=None, level="PB",
                  base_offset=0.0) -> list:
     """Cria várias paredes num ÚNICO passo de desfazer (importar uma planta
