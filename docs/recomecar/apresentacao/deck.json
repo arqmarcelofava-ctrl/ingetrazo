@@ -1,0 +1,19 @@
+{
+  "v": 4,
+  "createdOnFiles": {"v": 1, "at": "2026-10-23T12:00:00Z"},
+  "lists": "css",
+  "title": "IngeTrazo BIM leve",
+  "order": ["cover", "pergunta", "regras", "partida", "veredito", "seis", "caminho", "numeros", "cantos", "aberturas", "planta", "giro", "curvas", "real", "painel", "limites", "etapas", "decisoes", "local"],
+  "sections": {
+    "s1": {"description": "A pergunta de partida e as regras do jogo.", "start": "cover"},
+    "s2": {"description": "De onde partimos e o veredito das seis perguntas.", "start": "partida"},
+    "s3": {"description": "O que foi construído, passo a passo, com números.", "start": "caminho"},
+    "s4": {"description": "O teste no apartamento real e como fica na tela.", "start": "real"},
+    "s5": {"description": "O que falta, como entra no IngeTrazo e o que decidir.", "start": "limites"}
+  },
+  "faces": {
+    "dm-sans": {"family": "DM Sans", "href": "https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap"},
+    "jetbrains-mono": {"family": "JetBrains Mono", "href": "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500&display=swap"}
+  },
+  "designSystems": []
+}

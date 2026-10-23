@@ -1,8 +1,31 @@
 # Continuar o spike de BIM leve (leia isto primeiro)
 
 Este arquivo é a **passagem de bastão**: tudo que um Claude novo precisa para
-continuar sem a conversa original. Foi escrito em 2026-10-17, na branch
+continuar sem a conversa original. Escrito em 2026-10-17 (atualizado em 2026-10-23), na branch
 `spike/viabilidade-bim`. **Responda sempre em português do Brasil.**
+
+## 0. Situação em 2026-10-23 (troca de conta)
+
+O usuário trocou de conta do Claude. O guia de recomeço está em
+**`docs/recomecar/LEIA-PRIMEIRO.md`**. A pasta local dele no Windows é
+`C:\Users\Marcelo\Documents\CLAUDE_AO\Ingetrazo Bim`, onde ele guarda o
+projeto (zip da branch) e o pacote privado com o DWG/PDF do apartamento (que
+**nunca** entra no Git; no computador, ponha em `modelos/`).
+
+Feito depois de 2026-10-17: painel «Projeto» com ícones, Importar DWG ligado,
+paredes reta/curva/contínua/retângulo, `docs/LOCAL.md`, e uma apresentação de 19
+slides («De onde partimos até onde chegamos»), fonte em
+`docs/recomecar/apresentacao/`.
+
+Ofertas feitas e ainda **sem resposta** do usuário (não comece sem ele pedir):
+(a) parede curva aceitar porta/janela, por posição ao longo do arco;
+(b) ligar o botão «Biblioteca de blocos» (precisa de um `.skp` real dele);
+(c) esquadrias vindas do DWG pelo Importar; (d) cenários S/M/L, comparativo,
+diagrama de intervenções, tabela de área útil e pranchas bilíngues.
+Perguntas abertas para ele: critério do lado da porta com parede dos dois
+lados; medidas reais (pé-direito, esquadrias, guarda-corpo, travessas); o que
+é o tracejado vermelho do PDF e quem marca «reforma»; a captura das opções de
+linha do SketchUp 2026 (nunca chegou).
 
 ## 1. Quem é o usuário e como falar com ele
 
