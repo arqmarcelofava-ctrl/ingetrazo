@@ -134,6 +134,9 @@ onde o arquivo está. O que o `.glb` acrescenta ao DWG: mobília, acabamentos e 
 
 ## 6. Como rodar
 
+Para levar tudo ao computador do usuário, passo a passo em linguagem simples: **`docs/LOCAL.md`**
+(inclui o aviso de que o conversor de DWG do projeto é só Linux; no Windows, importar DXF).
+
 ```
 pip install -r requirements.txt
 python -m pytest tests/test_bim_proto.py tests/test_spike_viabilidade.py -q
