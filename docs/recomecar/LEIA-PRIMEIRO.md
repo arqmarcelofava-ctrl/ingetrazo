@@ -48,7 +48,7 @@ Sua pasta: `C:\Users\Marcelo\Documents\CLAUDE_AO\Ingetrazo Bim`.
 
 O zip não traz o histórico do Git. Para continuar salvando no GitHub, prefira
 baixar com `git clone` (passo 2 do `docs/LOCAL.md`) numa pasta ao lado e copie
-para ela a pasta `modelos\`. **No Windows importe o DXF** (`modelos/.../apto.dxf`), porque o
+para ela a pasta `modelos\`. **No Windows importe o DXF** (`modelos\apto\out\apto.dxf`), porque o
 conversor de DWG que vem no projeto só funciona no Linux.
 
 ## O que está nesta pasta
