@@ -79,3 +79,6 @@ CLAUDE.md
 # Synthetic benchmark documents (scripts/bench_models.py regenerates them;
 # city-XL alone is ~580 MB)
 benchmarks/models/
+
+# Modelos de trabalho e saídas de scripts/inspecionar_modelo.py (dado de cliente: nunca versionar)
+modelos/
